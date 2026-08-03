@@ -117,8 +117,8 @@ const APP_VERSION: &str = "1.7.0";
 #[command(
     name = APP_NAME,
     version = APP_VERSION,
-    about = "E: Drive Manager — CLI จัดการ projects / assets / docs / archive / tools",
-    long_about = None,
+    about = "จัดการ workspace — สร้าง ค้นหา จัดเก็บ ทำความสะอาด",
+    long_about = "dev คือ CLI ศูนย์กลาง workspace สำหรับจัดการ projects, assets, docs และ archive\n\nคำสั่งหลัก:\n  new  — สร้างรายการใหม่ (wizard แบบ step-by-step)\n  list — แสดงรายการทั้งหมด (กรองตามประเภท)\n  find  — ค้นหารายการใน registry\n  glob  — ค้นหาไฟล์ตามชื่อ\n  grep  — ค้นหาข้อความในไฟล์\n  archive — บีบอัดและเก็บเข้าหมวด archive\n  clean — ล้างไฟล์ขยะ (preview ก่อนเสมอ)\n\nคำสั่งขั้นสูง: vendor, benchmark, dedup, system, completion\n\nพิมพ์ 'dev --completion bash' เพื่อตั้ง auto-complete ใน shell",
     disable_help_flag = true,
     disable_version_flag = true
 )]
@@ -135,27 +135,29 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// สร้างรายการใหม่พร้อม template
+    /// สร้างรายการใหม่แบบ wizard (step-by-step)
+    /// เลือกประเภทงาน → เลือก template → ดู path ที่จะสร้าง → ยืนยัน
     New {
+        /// ตั้งชื่อรายการ (ข้ามได้ จะถามแบบ interactive)
         #[arg(long)]
         name: Option<String>,
+        /// ประเภทงาน: work, doc, asset, archive, tool, personal, client, lab
         #[arg(long, value_name = "TYPE")]
         r#type: Option<String>,
-        #[arg(long, value_name = "STACK")]
-        stack: Option<String>,
+        /// template ที่ต้องการใช้ (เช่น website, app, blog, note)
+        #[arg(long, value_name = "TEMPLATE")]
+        template: Option<String>,
+        /// ข้าม wizard และสร้างทันที (ใช้เมื่อระบุ --name, --type ครบแล้ว)
+        #[arg(long)]
+        yes: bool,
     },
 
-    /// เพิ่ม item เข้า registry
+    /// เพิ่ม item เข้า registry (ใช้สำหรับเพิ่ม subfolder ให้รายการเดิม)
     Add {
+        /// ชื่อรายการใน registry
         #[arg(long)]
         name: String,
-        #[arg(long, value_name = "TYPE")]
-        r#type: String,
-        #[arg(long, value_name = "STACK")]
-        stack: String,
-        #[arg(long)]
-        path: Option<PathBuf>,
-        /// เพิ่ม subfolder ใน item (เช่น --part src)
+        /// เพิ่ม subfolder (เช่น --part src)
         #[arg(long, value_name = "FOLDER")]
         part: Option<String>,
     },
@@ -168,59 +170,74 @@ enum Commands {
         /// แก้ type
         #[arg(long, value_name = "TYPE")]
         r#type: Option<String>,
-        /// แก้ stack
-        #[arg(long, value_name = "STACK")]
-        stack: Option<String>,
         /// แก้ path
         #[arg(long, value_name = "PATH")]
         path: Option<PathBuf>,
     },
 
-    /// แสดงรายการ (--type work|doc|asset|...)
+    /// แสดงรายการ (browse-first)
+    /// แสดงเฉพาะรายการที่ยัง active ซ่อน archive โดยอัตโนมัติ
     List {
+        /// แสดงทั้งหมดรวม archive
         #[arg(long, action = ArgAction::SetTrue)]
         all: bool,
-
-        #[arg(long)]
+        /// กรองตามประเภท: work, doc, asset, archive, tool
+        #[arg(long, value_name = "TYPE")]
         r#type: Option<String>,
-
-        #[arg(long)]
-        stack: Option<String>,
     },
 
-    /// ค้นหาใน registry
+    /// ค้นหารายการ (search-first)
+    /// ค้นหาจากชื่อ, ประเภท, path หรือ template
     Find {
+        /// คำค้นหา
         query: String,
+        /// แสดงผลละเอียด (แสดง stack และ path เต็ม)
+        #[arg(long)]
+        verbose: bool,
     },
 
-    /// หาไฟล์ตาม glob pattern (ข้าม node_modules, .git, target)
+    /// ค้นหาไฟล์ตามชื่อ (find files)
+    /// ค้นหาไฟล์ใน workspace ตามรูปแบบชื่อ เช่น "*.ts", "main*"
     Glob {
+        /// รูปแบบชื่อไฟล์ (ใช้ * เป็นตัวแทนอักขระใดๆ)
         pattern: String,
+        /// ค้นหาในไดเรกทอรีนี้ (default: ไดเรกทอรีปัจจุบัน)
         #[arg(long)]
         path: Option<PathBuf>,
     },
 
-    /// ค้นหาเนื้อหาไฟล์แบบ grep (ข้าม node_modules, .git, target)
+    /// ค้นหาข้อความในไฟล์ (search text)
+    /// ค้นหาคำหรือประโยคในเนื้อหาไฟล์ (ใช้ rg ถ้ามี, ไม่งั้นใช้ built-in)
     Grep {
+        /// คำหรือรูปแบบที่ต้องการค้นหา
         pattern: String,
+        /// ค้นหาในไดเรกทอรีนี้ (default: ไดเรกทอรีปัจจุบัน)
         #[arg(long)]
         path: Option<PathBuf>,
     },
 
-    /// บีบอัดและเก็บเข้าหมวด archive
+    /// บีบอัดและเก็บเข้าหมวด archive (preview ก่อนเสมอ)
     Archive {
+        /// ชื่อรายการใน registry ที่ต้องการ archive
         #[arg(long)]
         name: Option<String>,
+        /// บีบอัดไดเรกทอรีนี้โดยไม่ต้องมีใน registry
         #[arg(long)]
         path: Option<PathBuf>,
+        /// รูปแบบไฟล์: zip, tar, targz
         #[arg(long, value_enum, default_value = "zip")]
         format: ArchiveFormat,
+        /// บันทึกไปยัง path นี้ (default: 04-archive/)
         #[arg(long)]
         output: Option<PathBuf>,
+        /// สร้าง archive ทันทีโดยไม่ถามยืนยัน
+        #[arg(long, short)]
+        yes: bool,
     },
 
-    /// ล้างไฟล์ขยะตามหมวด
+    /// ล้างไฟล์ขยะ (preview ก่อนเสมอ)
     Clean {
+        /// ทำความสะอาดทันทีโดยไม่ถามยืนยัน
         #[arg(short, long)]
         yes: bool,
     },
@@ -228,13 +245,14 @@ enum Commands {
     /// ตรวจสุขภาพระบบ
     Doctor,
 
-    /// จัดการระบบ
+    /// จัดการระบบ (ขั้นสูง)
     System {
         #[command(subcommand)]
         action: SystemCmd,
     },
 
-    /// จัดการ vendor tools
+    /// หาเครื่องมือ (find tools)
+    /// ค้นหาเครื่องมือใน vendor/, PATH, apt หรือ docs
     Vendor {
         #[command(subcommand)]
         action: VendorCmd,
@@ -262,35 +280,40 @@ enum Commands {
     /// ตรวจความถูกต้องของ registry (path มีอยู่จริง, ไม่ซ้ำ)
     Check,
 
-    /// แสดงไฟล์ขนาดใหญ่ top 20
+    /// แสดงไฟล์ขนาดใหญ่ top N
     Size {
+        /// จำนวนรายการที่แสดง (default: 20)
         #[arg(long, default_value = "20")]
         top: usize,
+        /// ค้นหาในไดเรกทอรีนี้ (default: ไดเรกทอรีปัจจุบัน)
         #[arg(long)]
         path: Option<PathBuf>,
     },
 
-    /// จัดการไฟล์ซ้ำ (copy/move/delete)
+    /// สแกนและจัดการไฟล์ซ้ำ (preview ก่อนเสมอ)
     Duplicate {
+        /// สแกนในไดเรกทอรีนี้ (default: ไดเรกทอรีปัจจุบัน)
         #[arg(long)]
         path: Option<PathBuf>,
-        #[arg(long)]
+        /// ทำการทันที: delete, move, copy (default: แสดงเฉพาะ preview)
+        #[arg(long, value_name = "ACTION")]
         action: Option<String>,
     },
 
-    /// ค้นหาไฟล์ซ้ำ (hash-based dedup)
+    /// สแกนและลบไฟล์ซ้ำ (preview ก่อนเสมอ)
     Dedup {
+        /// สแกนในไดเรกทอรีนี้ (default: ไดเรกทอรีปัจจุบัน)
         #[arg(long)]
         path: Option<PathBuf>,
+        /// ลบไฟล์ซ้ำทันที (ไม่ถามยืนยัน)
+        #[arg(long, short)]
+        yes: bool,
     },
 
-    /// รัน benchmark ประสิทธิภาพ
-    Benchmark,
-
-    /// แสดง template ที่มี
+    /// แสดง template ที่มี (ใช้กับ `dev new`)
     Templates,
 
-    /// จัดการ ignore patterns
+    /// จัดการ ignore patterns สำหรับการค้นหา
     Ignore {
         #[arg(long)]
         list: bool,
@@ -300,8 +323,10 @@ enum Commands {
         remove: Option<String>,
     },
 
-    /// สร้าง shell completion
+    /// สร้าง shell completion (advertised: ลดการจำ syntax)
+    /// ติดตั้ง auto-complete สำหรับ Bash, Fish, Zsh, PowerShell
     Completion {
+        /// Shell ที่ต้องการ: bash, fish, zsh, powershell
         #[arg(value_enum)]
         shell: Shell,
     },
@@ -475,27 +500,26 @@ fn run() -> AppResult<()> {
         Some(Commands::New {
             name,
             r#type,
-            stack,
+            template,
+            yes,
         }) => {
-            cmd_new(&theme, name, r#type, stack)?;
+            cmd_new(&theme, name, r#type, template, yes)?;
         }
 
         Some(Commands::Add {
             name,
-            r#type,
-            stack,
             path,
             part,
         }) => {
-            cmd_add(name, r#type, stack, path, part)?;
+            cmd_add(name, path, part)?;
         }
 
-        Some(Commands::List { all, r#type, stack }) => {
-            cmd_list(all, r#type, stack)?;
+        Some(Commands::List { all, r#type }) => {
+            cmd_list(all, r#type)?;
         }
 
-        Some(Commands::Find { query }) => {
-            cmd_find(query)?;
+        Some(Commands::Find { query, verbose }) => {
+            cmd_find(query, verbose)?;
         }
 
         Some(Commands::Glob { pattern, path }) => {
@@ -506,8 +530,8 @@ fn run() -> AppResult<()> {
             cmd_grep(pattern, path)?;
         }
 
-        Some(Commands::Archive { name, path, format, output }) => {
-            cmd_archive(&theme, name, path, format, output)?;
+        Some(Commands::Archive { name, path, format, output, yes }) => {
+            cmd_archive(&theme, name, path, format, output, yes)?;
         }
 
         Some(Commands::Clean { yes }) => {
@@ -538,10 +562,9 @@ fn run() -> AppResult<()> {
         Some(Commands::Set {
             name,
             r#type,
-            stack,
             path,
         }) => {
-            cmd_set(name, r#type, stack, path)?;
+            cmd_set(name, r#type, path)?;
         }
 
         Some(Commands::Check) => {
@@ -556,8 +579,8 @@ fn run() -> AppResult<()> {
             cmd_duplicate(path, action)?;
         }
 
-        Some(Commands::Dedup { path }) => {
-            cmd_dedup(path)?;
+        Some(Commands::Dedup { path, yes }) => {
+            cmd_dedup(path, yes)?;
         }
 
         Some(Commands::Benchmark) => {
@@ -580,11 +603,31 @@ fn run() -> AppResult<()> {
 }
 
 fn print_help_hint() {
-    println!("{}", "ใช้: dev --help".cyan().bold());
-    println!(
-        "{}",
-        "คำสั่งหลัก: new, add, set, list, find, glob, grep, size, duplicate, archive, clean, git, vendor, doctor, system, tools, dedup, check, ignore, benchmark, templates, completion".dimmed()
-    );
+    println!("{}", "dev — จัดการ workspace แบบ step-by-step".cyan().bold());
+    println!();
+    println!("{}", "คำสั่งหลัก (primary):".bold());
+    println!("  {} — สร้างรายการใหม่ (wizard แบบมีขั้นตอน)", "dev new".green().bold());
+    println!("  {} — แสดงรายการ (กรองตามประเภท)", "dev list".green().bold());
+    println!("  {} — ค้นหารายการใน registry", "dev find".green().bold());
+    println!("  {} — ค้นหาไฟล์ตามชื่อ", "dev glob".green().bold());
+    println!("  {} — ค้นหาข้อความในไฟล์", "dev grep".green().bold());
+    println!("  {} — บีบอัดและเก็บเข้าหมวด archive (preview ก่อนเสมอ)", "dev archive".green().bold());
+    println!("  {} — ล้างไฟล์ขยะ (preview ก่อนเสมอ)", "dev clean".green().bold());
+    println!();
+    println!("{}", "คำสั่งขั้นสูง (advanced):".bold());
+    println!("  vendor  — หาเครื่องมือ (ค้นหาใน vendor/, PATH, apt)");
+    println!("  benchmark — ทดสอบประสิทธิภาพ (diagnostic)");
+    println!("  dedup   — สแกนและลบไฟล์ซ้ำ");
+    println!("  system  — จัดการ cache และระบบ");
+    println!("  git     — จัดการ git");
+    println!("  tools   — ตรวจ toolchain ที่ติดตั้ง");
+    println!("  check   — ตรวจความถูกต้องของ registry");
+    println!("  ignore  — จัดการ ignore patterns");
+    println!();
+    println!("{}", "คำสั่งที่มีประโยชน์สำหรับผู้ใช้ทั่วไป:".bold());
+    println!("  {} — ตั้ง auto-complete ใน shell (Bash/Fish/Zsh/PowerShell)", "dev --completion bash".green().bold());
+    println!("  {} — ดู template ที่มีสำหรับสร้าง project", "dev templates".green().bold());
+    println!("  {} — ตรวจสุขภาพระบบ", "dev doctor".green().bold());
 }
 
 fn now_rfc3339() -> String {
@@ -1138,16 +1181,28 @@ fn apply_template(tmpl: &ProjectTemplate, name: &str, path: &Path) -> AppResult<
     }
 
     let now = now_rfc3339();
-    for file in &tmpl.files {
+        for file in &tmpl.files {
         let file_path = path.join(&file.path);
         if let Some(parent) = file_path.parent() {
             ensure_dir(parent)?;
         }
-        let content = file.content
-            .replace("{{name}}", name)
-            .replace("{{type}}", &tmpl.r#type)
-            .replace("{{stack}}", &tmpl.stack)
-            .replace("{{created}}", &now);
+        // Build replacement map and apply replacements in a safe order.
+        let mut content = file.content.clone();
+        let replacements: Vec<(&str, String)> = vec![
+            ("name", name.to_string()),
+            ("type", tmpl.r#type.clone()),
+            ("stack", tmpl.stack.clone()),
+            ("created", now.clone()),
+        ];
+
+        for (key, val) in &replacements {
+            // {{key}}
+            content = content.replace(&format!("{{{{{}}}}}", key), val);
+            // {{KEY}} (uppercase)
+            content = content.replace(&format!("{{{{{}}}}}", key.to_uppercase()), val);
+            // KEY (uppercase simple token)
+            content = content.replace(&key.to_uppercase(), val);
+        }
         fs::write(&file_path, content)?;
     }
 
@@ -1158,68 +1213,129 @@ fn cmd_new(
     theme: &ColorfulTheme,
     name: Option<String>,
     r#type: Option<String>,
-    stack: Option<String>,
+    template: Option<String>,
+    yes: bool,
 ) -> AppResult<()> {
     let templates = load_templates();
     let types = VALID_TYPES;
 
+    // ── Step 1: Choose type ──
+    let final_type = if let Some(t) = r#type {
+        t.to_lowercase()
+    } else {
+        let idx = Select::with_theme(theme)
+            .with_prompt("ขั้นตอนที่ 1: เลือกประเภทงาน")
+            .items(&types)
+            .default(0)
+            .interact()?;
+        types[idx].to_string()
+    };
+
+    // ── Step 2: Choose template or stack ──
+    let (final_stack, template_used) = if let Some(tmpl_name) = template {
+        // User specified a template name directly
+        if let Some(tmpl) = templates.iter().find(|t| t.name == tmpl_name.to_lowercase()) {
+            (tmpl.stack.clone(), true)
+        } else {
+            // Treat as stack name if no matching template
+            (tmpl_name.to_lowercase(), false)
+        }
+    } else if let Some(stack) = template.or_else(|| {
+        // Try to match template by name if user passed --template
+        None
+    }) {
+        (stack, true)
+    } else {
+        // Interactive template selection
+        let tmpl_names: Vec<String> = templates.iter().map(|t| t.name.clone()).collect();
+        let stack_options = stacks_for_type(&final_type);
+
+        let choices: Vec<String> = if !tmpl_names.is_empty() {
+            let mut choices = vec!["(ใช้ template จากรายการด้านล่าง)".to_string()];
+            choices.extend(tmpl_names);
+            choices.extend(stack_options.iter().map(|s| format!("(stack) {}", s)));
+            choices
+        } else {
+            stack_options.iter().map(|s| s.to_string()).collect()
+        };
+
+        let idx = Select::with_theme(theme)
+            .with_prompt(format!("ขั้นตอนที่ 2: เลือก template หรือ stack สำหรับ [{}]", final_type))
+            .items(&choices)
+            .default(0)
+            .interact()?;
+
+        if idx == 0 && !tmpl_names.is_empty() {
+            // User chose to pick from templates - show them
+            let tmpl_idx = Select::with_theme(theme)
+                .with_prompt("เลือก template")
+                .items(&tmpl_names)
+                .default(0)
+                .interact()?;
+            let tmpl = &templates[tmpl_idx];
+            (tmpl.stack.clone(), true)
+        } else {
+            let selected = &choices[idx];
+            let stack = selected.strip_prefix("(stack) ").unwrap_or(selected);
+            (stack.to_string(), false)
+        }
+    };
+
+    // ── Step 3: Get name and preview path ──
     let final_name = if let Some(n) = name {
         sanitize_name(&n)?
     } else {
-        let input: String = Input::with_theme(theme).with_prompt("ชื่อ").interact_text()?;
+        let input: String = Input::with_theme(theme).with_prompt("ขั้นตอนที่ 3: ตั้งชื่อรายการ").interact_text()?;
         sanitize_name(&input)?
     };
 
-    // Check if a template matches the stack
-    let template = stack.as_ref().and_then(|s| {
-        templates.iter().find(|t| t.name == s.to_lowercase())
-    });
+    let (proj_path, category) = resolve_path(&final_type, &final_stack, &final_name);
 
-    let (final_type, final_stack, proj_path, category) = if let Some(tmpl) = template {
-        // Use YAML template
-        let t = tmpl.r#type.clone();
-        let s = tmpl.stack.clone();
-        let (path, cat) = resolve_path(&t, &s, &final_name);
-        (t, s, path, cat)
-    } else {
-        // Interactive type/stack selection
-        let final_type = if let Some(t) = r#type {
-            t.to_lowercase()
-        } else {
-            let idx = Select::with_theme(theme)
-                .with_prompt("เลือก TYPE")
-                .items(&types)
-                .default(0)
-                .interact()?;
-            types[idx].to_string()
-        };
-
-        let available_stacks = stacks_for_type(&final_type);
-        let final_stack = if let Some(s) = stack {
-            s.to_lowercase()
-        } else {
-            let idx = Select::with_theme(theme)
-                .with_prompt(format!("เลือก STACK สำหรับ [{}]", final_type))
-                .items(&available_stacks)
-                .default(0)
-                .interact()?;
-            available_stacks[idx].to_string()
-        };
-
-        let (path, cat) = resolve_path(&final_type, &final_stack, &final_name);
-        (final_type, final_stack, path, cat)
-    };
+    // Preview
+    println!();
+    println!("{}", "╔══════════════════════════════════════╗".cyan());
+    println!("{}", "║       สรุปการสร้างรายการ                ║".cyan().bold());
+    println!("{}", "╠══════════════════════════════════════╣".cyan());
+    println!("{}  {}", "  ชื่อ:".bold(), final_name);
+    println!("{}  {}", "  ประเภท:", color_for_type(&final_type));
+    println!("{}  {}", "  Stack:", final_stack.dimmed());
+    if template_used {
+        println!("{}  {}", "  Template:".green(), "ใช้ template จาก YAML".green());
+    }
+    println!("{}  {}", "  ที่เก็บ:".dimmed(), proj_path.display().dimmed());
+    println!("{}  {}", "  หมวด:", category.dimmed());
+    println!("{}", "╚══════════════════════════════════════╝".cyan());
+    println!();
 
     if proj_path.exists() {
         return Err(AppError::Message(format!(
-            "มีอยู่แล้ว: {}",
+            "มีรายการอยู่แล้วที่ path นี้: {}",
             proj_path.display()
         )));
     }
 
+    // ── Step 4: Confirm ──
+    let confirmed = if yes {
+        true
+    } else {
+        Confirm::with_theme(theme)
+            .with_prompt("ยืนยันการสร้าง?")
+            .default(true)
+            .interact()?
+    };
+
+    if !confirmed {
+        println!("{}", "ยกเลิกแล้ว".dimmed());
+        return Ok(());
+    }
+
     // Apply template if found, else use built-in
-    if let Some(tmpl) = template {
-        apply_template(tmpl, &final_name, &proj_path)?;
+    if template_used {
+        if let Some(tmpl) = templates.iter().find(|t| t.stack == final_stack) {
+            apply_template(tmpl, &final_name, &proj_path)?;
+        } else {
+            create_template(&final_type, &final_stack, &final_name, &proj_path)?;
+        }
     } else {
         create_template(&final_type, &final_stack, &final_name, &proj_path)?;
     }
@@ -1240,25 +1356,16 @@ fn cmd_new(
 
     println!(
         "{}",
-        format!(
-            "✓ สร้าง {} [{}:{}] -> {}",
-            final_name,
-            final_type,
-            final_stack,
-            proj_path.display()
-        )
-        .green()
-        .bold()
+        format!("✓ สร้าง {} → {}", final_name, proj_path.display())
+            .green()
+            .bold()
     );
-    println!("{}", "เพิ่มเข้า registry แล้ว".dimmed());
 
     Ok(())
 }
 
-fn cmd_add(name: String, r#type: String, stack: String, path: Option<PathBuf>, part: Option<String>) -> AppResult<()> {
+fn cmd_add(name: String, path: Option<PathBuf>, part: Option<String>) -> AppResult<()> {
     let name = sanitize_name(&name)?;
-    let type_ = r#type.to_lowercase();
-    let stack = stack.to_lowercase();
 
     // If --part, add subfolder to existing item
     if let Some(folder) = part {
@@ -1278,45 +1385,40 @@ fn cmd_add(name: String, r#type: String, stack: String, path: Option<PathBuf>, p
     let final_path = if let Some(p) = path {
         p
     } else {
-        let (p, _) = resolve_path(&type_, &stack, &name);
-        p
+        return Err(AppError::Message(
+            "ต้องระบุ --path หรือใช้ --part กับรายการที่มีอยู่".into(),
+        ));
     };
 
     let mut reg = load_registry()?;
-    reg.items.insert(
-        name.clone(),
-        Item {
-            name: name.clone(),
-            type_: type_.clone(),
-            stack: stack.clone(),
-            category_path: type_.clone(),
-            path: final_path.to_string_lossy().to_string(),
-            created_at: now_rfc3339(),
-        },
-    );
+    let item = reg.items.get(&name).cloned();
+    if let Some(existing) = item {
+        let mut updated = existing;
+        updated.path = final_path.to_string_lossy().to_string();
+        reg.items.insert(name.clone(), updated);
+    } else {
+        return Err(AppError::Message(format!(
+            "ไม่พบ item: {} ใน registry ใช้ 'dev new' สร้างก่อน",
+            name
+        )));
+    }
     save_registry(&reg)?;
 
     println!(
         "{}",
-        format!(
-            "✓ add {} [{}:{}] -> {}",
-            name,
-            type_,
-            stack,
-            final_path.display()
-        )
-        .green()
-        .bold()
+        format!("✓ เพิ่ม path ให้ {} -> {}", name, final_path.display())
+            .green()
+            .bold()
     );
     Ok(())
 }
 
 fn cmd_benchmark() -> AppResult<()> {
-    use std::time::Instant;
-
-    println!("{}", "=== Performance Benchmark vs Competitors ===".cyan().bold());
-    println!("{}", "(ตัวเลขจริงจากเครื่องนี้ ไม่ได้เมคขึ้น)".dimmed());
+    println!("{}", "=== Diagnostic: Performance Benchmark ===".dimmed().bold());
+    println!("{}", "(เครื่องมือนี้สำหรับวัดประสิทธิภาพเท่านั้น ไม่เกี่ยวกับงานหลัก)".dimmed());
     println!();
+
+    use std::time::Instant;
 
     let bench_dir = std::env::temp_dir().join("file_cli_bench");
     let _ = std::fs::remove_dir_all(&bench_dir);
@@ -1873,7 +1975,7 @@ Size: {} bytes
     Ok(())
 }
 
-fn cmd_dedup(path: Option<PathBuf>) -> AppResult<()> {
+fn cmd_dedup(path: Option<PathBuf>, yes: bool) -> AppResult<()> {
     use std::collections::HashMap;
 
     let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -1944,12 +2046,26 @@ fn cmd_dedup(path: Option<PathBuf>) -> AppResult<()> {
         .yellow()
     );
 
+    if yes {
+        let mut deleted = 0usize;
+        for (_size, files) in &dupes {
+            for f in files.iter().skip(1) {
+                let _ = std::fs::remove_file(f);
+                deleted += 1;
+            }
+        }
+        println!("{} ลบ {} ไฟล์ซ้ำแล้ว", "✓".green(), deleted);
+    } else {
+        println!();
+        println!("{}", "นี่คือ preview — ใช้ --yes เพื่อลบไฟล์ซ้ำ".dimmed());
+    }
+
     Ok(())
 }
 
 fn cmd_size(top: usize, path: Option<PathBuf>) -> AppResult<()> {
     let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    println!("{} {}", "=== Largest Files ===".cyan().bold(), root.display());
+    println!("{} ไฟล์ขนาดใหญ่สุด {} (top {})", "📁".cyan(), root.display(), top);
 
     let mut files: Vec<(String, u64)> = Vec::new();
 
@@ -2000,10 +2116,8 @@ fn cmd_size(top: usize, path: Option<PathBuf>) -> AppResult<()> {
 }
 
 fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()> {
-    use std::collections::HashMap;
-
     let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    println!("{} {}", "=== Duplicate Files ===".cyan().bold(), root.display());
+    println!("{} สแกนไฟล์ซ้ำ {} (preview ก่อน)", "🔍".cyan(), root.display());
 
     // Group by size first (fast filter)
     let mut size_map: HashMap<u64, Vec<String>> = HashMap::new();
@@ -2070,19 +2184,44 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
             .yellow()
     );
 
+    // If no action specified, show preview only
+    if action.is_none() {
+        println!();
+        println!("{}", "นี่คือ preview — ใช้ --action delete|move|copy เพื่อดำเนินการ".dimmed());
+        return Ok(());
+    }
+
     // Handle actions
     match action.as_deref() {
         Some("delete") => {
-            println!("{}", "ไฟล์ที่จะลบ (keep first copy):".yellow());
+            println!();
+            println!("{}", "จะลบไฟล์ต่อไปนี้ (เก็บสำเนาแรกไว้):".yellow());
             for (_size, files) in &dupes {
                 for f in files.iter().skip(1) {
                     println!("  {} {}", "🗑".red(), f.dimmed());
                 }
             }
+            let confirmed = Confirm::new()
+                .with_prompt("ยืนยันการลบ?")
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                println!("{}", "ยกเลิกแล้ว".dimmed());
+                return Ok(());
+            }
+            let mut deleted = 0usize;
+            for (_size, files) in &dupes {
+                for f in files.iter().skip(1) {
+                    let _ = std::fs::remove_file(f);
+                    deleted += 1;
+                }
+            }
+            println!("{} ลบ {} ไฟล์แล้ว", "✓".green(), deleted);
         }
         Some("move") => {
             let dup_dir = root.join(".duplicates");
             std::fs::create_dir_all(&dup_dir)?;
+            let mut moved = 0usize;
             for (_size, files) in &dupes {
                 for f in files.iter().skip(1) {
                     let src = std::path::Path::new(f);
@@ -2090,13 +2229,15 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
                     let dest = dup_dir.join(name);
                     let _ = std::fs::rename(src, &dest);
                     println!("  {} {} -> {}", "→".cyan(), f.dimmed(), dest.display());
+                    moved += 1;
                 }
             }
-            println!("{} moved to {}", "✓".green(), dup_dir.display());
+            println!("{} ย้าย {} ไฟล์ไปที่ {}", "✓".green(), moved, dup_dir.display());
         }
         Some("copy") => {
             let dup_dir = root.join(".duplicates");
             std::fs::create_dir_all(&dup_dir)?;
+            let mut copied = 0usize;
             for (_size, files) in &dupes {
                 for f in files.iter().skip(1) {
                     let src = std::path::Path::new(f);
@@ -2104,9 +2245,10 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
                     let dest = dup_dir.join(name);
                     let _ = std::fs::copy(src, &dest);
                     println!("  {} {} -> {}", "→".cyan(), f.dimmed(), dest.display());
+                    copied += 1;
                 }
             }
-            println!("{} copied to {}", "✓".green(), dup_dir.display());
+            println!("{} คัดลอก {} ไฟล์ไปที่ {}", "✓".green(), copied, dup_dir.display());
         }
         _ => {
             println!("{}", "Actions: --action delete|move|copy".dimmed());
@@ -2249,7 +2391,7 @@ fn cmd_ignore(list: bool, add: Option<String>, remove: Option<String>) -> AppRes
     Ok(())
 }
 
-fn cmd_set(name: String, type_: Option<String>, stack: Option<String>, path: Option<PathBuf>) -> AppResult<()> {
+fn cmd_set(name: String, type_: Option<String>, path: Option<PathBuf>) -> AppResult<()> {
     let mut reg = load_registry()?;
     let item = reg.items.get_mut(&name)
         .ok_or_else(|| AppError::Message(format!("ไม่พบ item: {}", name)))?;
@@ -2257,20 +2399,16 @@ fn cmd_set(name: String, type_: Option<String>, stack: Option<String>, path: Opt
     if let Some(t) = type_ {
         item.type_ = t.to_lowercase();
     }
-    if let Some(s) = stack {
-        item.stack = s.to_lowercase();
-    }
     if let Some(p) = path {
         item.path = p.to_string_lossy().to_string();
     }
 
     let t = item.type_.clone();
-    let s = item.stack.clone();
     save_registry(&reg)?;
 
     println!(
         "{}",
-        format!("✓ แก้ {} -> [{}:{}]", name, t, s)
+        format!("✓ แก้ {} -> [{}]", name, t)
             .green()
             .bold()
     );
@@ -2314,19 +2452,18 @@ fn cmd_check() -> AppResult<()> {
 fn cmd_list(
     all: bool,
     r#type: Option<String>,
-    stack: Option<String>,
 ) -> AppResult<()> {
     let reg = load_registry()?;
 
     if reg.items.is_empty() {
-        println!("{}", "Registry ว่าง".yellow());
+        println!("{}", "registry ว่าง — ใช้ 'dev new' สร้างรายการแรก".yellow());
         return Ok(());
     }
 
     let mut items: Vec<&Item> = reg.items.values().collect();
 
-    if !all && r#type.is_none() && stack.is_none() {
-        // No filters: show non-archived items
+    if !all && r#type.is_none() {
+        // No filters: show non-archived items only
         items.retain(|it| !it.category_path.contains("archive"));
     }
 
@@ -2335,21 +2472,17 @@ fn cmd_list(
         items.retain(|i| i.type_ == t || i.category_path.contains(&t));
     }
 
-    if let Some(s) = stack {
-        let s = s.to_lowercase();
-        items.retain(|i| i.stack == s);
-    }
-
     items.sort_by(|a, b| a.type_.cmp(&b.type_).then(a.name.cmp(&b.name)));
 
     if items.is_empty() {
         println!("{}", "ไม่พบรายการตามเงื่อนไข".yellow());
+        println!("{}", "ลองใช้ 'dev list --all' เพื่อดูทั้งหมด".dimmed());
         return Ok(());
     }
 
     println!(
         "{}",
-        format!("=== Registry ({} items) ===", items.len())
+        format!("=== {} items ===", items.len())
             .cyan()
             .bold()
     );
@@ -2357,14 +2490,17 @@ fn cmd_list(
     for it in items {
         let size_mb = bytes_to_mb(dir_size_bytes(Path::new(&it.path)));
         println!(
-            "{} [{}:{}] {} ({:.2} MB) -> {}",
+            "{} [{}] ({:.2} MB) -> {}",
             it.name.bold(),
             color_for_type(&it.type_),
-            it.stack.dimmed(),
-            it.category_path.dimmed(),
             size_mb,
             it.path.dimmed()
         );
+    }
+
+    if !all {
+        println!();
+        println!("{}", "ใช้ --all เพื่อดูรายการทั้งหมดรวม archive".dimmed());
     }
 
     Ok(())
@@ -2387,6 +2523,7 @@ fn is_hidden(name: &str) -> bool {
 
 fn cmd_glob(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
     let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    println!("{} ค้นหาไฟล์ที่ชื่อตรงกับ '{}' ใน {}", "🔍".cyan(), pattern, root.display());
     let pat = pattern.to_lowercase();
     let mut count = 0usize;
 
@@ -2452,6 +2589,8 @@ fn cmd_glob(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
 }
 
 fn cmd_grep(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
+    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    println!("{} ค้นหาข้อความ '{}' ในเนื้อหาไฟล์", "🔎".cyan(), pattern);
     let rg_path = config::vendor_bin("rg");
 
     if let Some(rg) = rg_path {
@@ -2534,16 +2673,17 @@ fn cmd_templates() -> AppResult<()> {
     }
 
     println!();
-    println!(
-        "{}",
-        "ใช้: dev new --name myapp --stack <template-name>".dimmed()
-    );
+    println!("{}", "ใช้ wizard แบบ step-by-step:".bold());
+    println!("  {} — สร้าง project ใหม่ด้วย template", "dev new --template website".green());
+    println!("  {} — สร้าง project แบบ interactive (มี wizard)", "dev new".green());
+    println!();
+    println!("{}", "ใช้ --yes เพื่อข้าม wizard และสร้างทันที:".dimmed());
+    println!("  {} — สร้างโดยไม่ต้องยืนยัน", "dev new --name myapp --type work --template website --yes".dimmed());
 
     Ok(())
 }
 
-fn cmd_find(query: String) -> AppResult<()> {
-    // Search registry
+fn cmd_find(query: String, verbose: bool) -> AppResult<()> {
     let reg = load_registry()?;
     let q = query.to_lowercase();
 
@@ -2553,7 +2693,6 @@ fn cmd_find(query: String) -> AppResult<()> {
         .filter(|it| {
             it.name.to_lowercase().contains(&q)
                 || it.type_.to_lowercase().contains(&q)
-                || it.stack.to_lowercase().contains(&q)
                 || it.path.to_lowercase().contains(&q)
                 || it.category_path.to_lowercase().contains(&q)
         })
@@ -2563,25 +2702,36 @@ fn cmd_find(query: String) -> AppResult<()> {
 
     if hits.is_empty() {
         println!("{}", format!("ไม่เจอ '{}'", query).yellow());
+        println!("{}", "ลองใช้ 'dev list' เพื่อดูรายการทั้งหมด".dimmed());
         return Ok(());
     }
 
     println!(
         "{}",
-        format!("Found {} result(s) for '{}':", hits.len(), query)
+        format!("พบ {} รายการสำหรับ '{}':", hits.len(), query)
             .green()
             .bold()
     );
     for it in hits {
         let size_mb = bytes_to_mb(dir_size_bytes(Path::new(&it.path)));
-        println!(
-            "  {} [{}:{}] {:.2} MB - {}",
-            it.name.cyan().bold(),
-            it.type_,
-            it.stack,
-            size_mb,
-            it.path.dimmed()
-        );
+        if verbose {
+            println!(
+                "  {} [{}] {} {:.2} MB -> {}",
+                it.name.cyan().bold(),
+                it.type_,
+                it.stack.dimmed(),
+                size_mb,
+                it.path.dimmed()
+            );
+        } else {
+            println!(
+                "  {} [{}] {:.2} MB -> {}",
+                it.name.cyan().bold(),
+                it.type_,
+                size_mb,
+                it.path.dimmed()
+            );
+        }
     }
 
     Ok(())
@@ -2593,6 +2743,7 @@ fn cmd_archive(
     path: Option<PathBuf>,
     format: ArchiveFormat,
     output: Option<PathBuf>,
+    yes: bool,
 ) -> AppResult<()> {
     let reg = load_registry()?;
     let target_path = if let Some(p) = path {
@@ -2607,7 +2758,7 @@ fn cmd_archive(
     } else {
         let names: Vec<String> = reg.items.keys().cloned().collect();
         if names.is_empty() {
-            return Err(AppError::Message("Registry ว่าง".into()));
+            return Err(AppError::Message("registry ว่าง".into()));
         }
         let idx = Select::with_theme(theme)
             .with_prompt("เลือก item ที่จะ archive")
@@ -2658,13 +2809,37 @@ fn cmd_archive(
         )));
     }
 
+    // Preview (always show what will happen)
+    let source_size = dir_size_bytes(&target_path);
+    println!();
+    println!("{}", "╔══════════════════════════════════════╗".cyan());
+    println!("{}", "║         Preview: Archive               ║".cyan().bold());
+    println!("{}", "╠══════════════════════════════════════╣".cyan());
+    println!("{}  {}", "  ต้นทาง:".bold(), target_path.display());
+    println!("{}  {}", "  ปลายทาง:".bold(), dest.display());
+    println!("{}  {}", "  รูปแบบ:", format);
+    println!("{}  {:.2} MB", "  ขนาด:".bold(), bytes_to_mb(source_size));
+    println!("{}", "╚══════════════════════════════════════╝".cyan());
+    println!();
+
+    if !yes {
+        let confirmed = Confirm::with_theme(theme)
+            .with_prompt("สร้าง archive นี้?")
+            .default(false)
+            .interact()?;
+
+        if !confirmed {
+            println!("{}", "ยกเลิกแล้ว".dimmed());
+            return Ok(());
+        }
+    }
+
     // Compress: try system tool first, fall back to Rust crate
     let parent = target_path.parent().unwrap_or_else(|| Path::new("."));
     let dir_name = target_path.file_name().unwrap();
 
     let _used_rust = match format {
         ArchiveFormat::Zip => {
-            // Try system zip first
             let status = std::process::Command::new("zip")
                 .args(["-r", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
                 .current_dir(parent)
@@ -2672,7 +2847,6 @@ fn cmd_archive(
             match status {
                 Ok(s) if s.success() => false,
                 _ => {
-                    // Fallback: Rust zip crate
                     println!("{}", "  ใช้ built-in zip...".dimmed());
                     let file = std::fs::File::create(&dest)
                         .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
@@ -2743,7 +2917,6 @@ fn cmd_archive(
             }
         }
         ArchiveFormat::Sevenz => {
-            // Try system 7z first
             let status = std::process::Command::new("7z")
                 .args(["a", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
                 .current_dir(parent)
@@ -2751,7 +2924,6 @@ fn cmd_archive(
             match status {
                 Ok(s) if s.success() => false,
                 _ => {
-                    // 7z not available — use zip as fallback (most compatible)
                     println!("{}", "  7z ไม่มี — ใช้ zip แทน (รองรับทุก OS)".yellow());
                     let file = std::fs::File::create(&dest)
                         .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
@@ -2802,6 +2974,7 @@ fn cmd_archive(
 }
 
 fn cmd_clean(theme: &ColorfulTheme, yes: bool) -> AppResult<()> {
+    println!("{} ล้างไฟล์ขยะ (preview ก่อนเสมอ)", "🧹".cyan().bold());
     let reg = load_registry()?;
     let targets: Vec<Item> = reg.items.values().cloned().collect();
 
@@ -2894,6 +3067,7 @@ fn cmd_clean(theme: &ColorfulTheme, yes: bool) -> AppResult<()> {
         .sum();
 
     println!();
+    println!("{}", "Preview:".yellow().bold());
     println!(
         "{}",
         format!(
@@ -2902,7 +3076,6 @@ fn cmd_clean(theme: &ColorfulTheme, yes: bool) -> AppResult<()> {
             total_freed_mb
         )
         .yellow()
-        .bold()
     );
 
     for p in to_delete.iter().take(10) {
@@ -2913,14 +3086,10 @@ fn cmd_clean(theme: &ColorfulTheme, yes: bool) -> AppResult<()> {
         println!("  ... และอีก {} รายการ", to_delete.len() - 10);
     }
 
-    let confirmed = if yes {
-        true
-    } else {
-        Confirm::with_theme(theme)
+    let confirmed = Confirm::with_theme(theme)
             .with_prompt(format!("ยืนยันลบทั้งหมด ~{:.2} MB ?", total_freed_mb))
             .default(false)
-            .interact()?
-    };
+            .interact()?;
 
     if !confirmed {
         println!("{}", "ยกเลิกแล้ว".dimmed());
@@ -3349,10 +3518,23 @@ Register-ArgumentCompleter -CommandName {0} -ScriptBlock {{
         ),
     };
 
+    // Prefer repo-provided templates in ./completions/*.ext
+    let repo_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) .join("completions");
+    let repo_template = repo_dir.join(format!("dev.{}", ext));
+
+    let final_script = if repo_template.exists() {
+        match fs::read_to_string(&repo_template) {
+            Ok(tpl) => tpl.replace("{exe}", exe),
+            Err(_) => script,
+        }
+    } else {
+        script
+    };
+
     let dir = workspace_root().join("completions");
     let _ = fs::create_dir_all(&dir);
     let path = dir.join(format!("dev.{}", ext));
-    std::fs::write(&path, &script).unwrap();
+    std::fs::write(&path, &final_script).unwrap();
     println!("{} -> {}", "✓".green(), path.display());
 }
 

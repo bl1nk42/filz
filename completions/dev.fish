@@ -1,0 +1,10 @@
+# fish completion
+complete -c {exe} -s h -l help -d "แสดง help"
+complete -c {exe} -n "__fish_use_subcommand" -f -a "new add list find archive clean doctor system tools completion"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l all -d "แสดงทั้งหมด"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l rust -d "กรอง rust"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l python -d "กรอง python"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l next -d "กรอง next"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l node -d "กรอง node"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l tool -d "กรอง tool"
+complete -c {exe} -n "__fish_seen_subcommand_from list" -l asset -d "กรอง asset"
