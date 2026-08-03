@@ -10,7 +10,27 @@ use walkdir::WalkDir;
 
 #[allow(dead_code)]
 mod pb {
-    include!(concat!(env!("OUT_DIR"), "/_.rs"));
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Item {
+        #[prost(string, tag = "1")]
+        pub name: String,
+        #[prost(string, tag = "2")]
+        pub r#type: String,
+        #[prost(string, tag = "3")]
+        pub stack: String,
+        #[prost(string, tag = "4")]
+        pub category_path: String,
+        #[prost(string, tag = "5")]
+        pub path: String,
+        #[prost(string, tag = "6")]
+        pub created_at: String,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Registry {
+        #[prost(message, repeated, tag = "1")]
+        pub items: Vec<Item>,
+    }
 }
 
 mod config {
