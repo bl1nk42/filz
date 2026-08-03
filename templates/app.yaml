@@ -1,0 +1,39 @@
+name: app
+description: สร้างแอปพลิเคชัน
+type: work
+stack: rust
+
+folders:
+  - src
+  - tests
+  - docs
+
+files:
+  - path: Cargo.toml
+    content: |
+      [package]
+      name = "{{name}}"
+      version = "0.1.0"
+      edition = "2021"
+
+      [dependencies]
+
+  - path: src/main.rs
+    content: |
+      fn main() {
+          println!("Hello from {{name}}!");
+      }
+
+  - path: README.md
+    content: |
+      # {{name}}
+      แอปพลิเคชันที่สร้างด้วย Rust
+
+  - path: meta.json
+    content: |
+      {
+        "name": "{{name}}",
+        "type": "{{type}}",
+        "stack": "{{stack}}",
+        "created": "{{created}}"
+      }

@@ -1,0 +1,28 @@
+name: note
+description: จดบันทึก
+type: doc
+stack: note
+
+folders:
+  - notes
+  - references
+
+files:
+  - path: notes/first-note.md
+    content: |
+      # บันทึกแรก
+
+      เริ่มต้นจดบันทึกสำหรับ {{name}}
+
+  - path: README.md
+    content: |
+      # {{name}}
+      สมุดบันทึก
+
+  - path: meta.json
+    content: |
+      {
+        "name": "{{name}}",
+        "type": "{{type}}",
+        "created": "{{created}}"
+      }

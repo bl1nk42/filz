@@ -1,0 +1,22 @@
+name: archive
+description: เก็บข้อมูล
+type: archive
+stack: none
+
+folders:
+  - files
+  - backup
+
+files:
+  - path: README.md
+    content: |
+      # {{name}}
+      ข้อมูลที่เก็บเข้าระบบ
+
+  - path: meta.json
+    content: |
+      {
+        "name": "{{name}}",
+        "type": "{{type}}",
+        "created": "{{created}}"
+      }

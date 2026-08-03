@@ -1,0 +1,52 @@
+# Template: website
+# สำหรับสร้างเว็บไซต์
+name: website
+description: สร้างเว็บไซต์ใหม่
+type: work
+stack: node
+
+folders:
+  - public
+  - src
+  - src/styles
+  - src/components
+
+files:
+  - path: src/index.html
+    content: |
+      <!DOCTYPE html>
+      <html lang="th">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{name}}</title>
+        <link rel="stylesheet" href="styles/main.css">
+      </head>
+      <body>
+        <h1>{{name}}</h1>
+        <script src="main.js"></script>
+      </body>
+      </html>
+
+  - path: src/styles/main.css
+    content: |
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: sans-serif; padding: 2rem; }
+
+  - path: src/main.js
+    content: |
+      console.log('{{name}} loaded');
+
+  - path: README.md
+    content: |
+      # {{name}}
+      เว็บไซต์ที่สร้างด้วย dev manager
+
+  - path: meta.json
+    content: |
+      {
+        "name": "{{name}}",
+        "type": "{{type}}",
+        "stack": "{{stack}}",
+        "created": "{{created}}"
+      }

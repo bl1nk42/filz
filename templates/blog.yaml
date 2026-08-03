@@ -1,0 +1,34 @@
+name: blog
+description: สร้างบล็อก
+type: doc
+stack: note
+
+folders:
+  - posts
+  - posts/drafts
+  - assets
+  - assets/images
+
+files:
+  - path: posts/hello.md
+    content: |
+      # Hello World
+      บทความแรกของ {{name}}
+
+      วันที่: {{created}}
+
+  - path: posts/drafts/.gitkeep
+    content: ""
+
+  - path: README.md
+    content: |
+      # {{name}}
+      บล็อกส่วนตัว
+
+  - path: meta.json
+    content: |
+      {
+        "name": "{{name}}",
+        "type": "{{type}}",
+        "created": "{{created}}"
+      }

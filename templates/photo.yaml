@@ -1,0 +1,24 @@
+name: photo
+description: จัดการรูปภาพ
+type: asset
+stack: image-pack
+
+folders:
+  - originals
+  - edited
+  - export
+  - albums
+
+files:
+  - path: README.md
+    content: |
+      # {{name}}
+      อัลบั้มรูปภาพ
+
+  - path: meta.json
+    content: |
+      {
+        "name": "{{name}}",
+        "type": "{{type}}",
+        "created": "{{created}}"
+      }

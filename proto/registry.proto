@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+message Registry {
+  repeated Item items = 1;
+}
+
+message Item {
+  string name = 1;
+  string type = 2;
+  string stack = 3;
+  string category_path = 4;
+  string path = 5;
+  string created_at = 6;
+}
+
+message ToolInfo {
+  string name = 1;        // e.g. "rust", "python", "node"
+  string version = 2;     // e.g. "1.82.0", "3.12.4"
+  string path = 3;        // e.g. "/usr/bin/python3"
+  bool installed = 4;     // false if not found
+}
+
+message SystemProfile {
+  string os = 1;          // e.g. "linux", "macos", "windows"
+  string arch = 2;        // e.g. "aarch64", "x86_64"
+  string shell = 3;       // e.g. "bash", "zsh", "fish"
+  repeated ToolInfo tools = 4;
+}
