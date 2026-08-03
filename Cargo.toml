@@ -1,22 +1,26 @@
 [package]
-name = "file-cli"
+name = "filz"
 version = "2.0.0"
 edition = "2021"
 license = "MIT"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-colored = "2"
-dialoguer = "0.11"
+colored = "3.1.1"
+dialoguer = "0.12"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
 chrono = "0.4"
 serde_yaml = "0.9"
-zip = "0.6"
+zip = "9.0.0-pre2"
 tar = "0.4"
 flate2 = "1"
+clap_complete = "4"
+indicatif = "0.17"
+comfy-table = "7"
+audit = "0.7.3"
 
 [build-dependencies]
-prost-build = "0.13"
+prost-build = "0.14.4"

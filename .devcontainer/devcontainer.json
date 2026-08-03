@@ -14,6 +14,6 @@
   "settings": {
     "terminal.integrated.shell.linux": "/bin/bash"
   },
-  "postCreateCommand": "rustup component add clippy rust-src || true",
+  "postCreateCommand": "if ! command -v rg >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y ripgrep || true; fi && rustup component add clippy rust-src || true && cargo build || true",
   "remoteUser": "vscode"
 }

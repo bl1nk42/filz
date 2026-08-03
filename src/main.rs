@@ -1,10 +1,14 @@
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::shells::{Bash, Fish, PowerShell, Zsh};
 use colored::*;
+use comfy_table::{Attribute, Cell, Table};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
+use indicatif::{ProgressBar, ProgressStyle};
 use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -95,7 +99,11 @@ mod config {
     }
 
     fn which(name: &str) -> Option<std::path::PathBuf> {
-        let cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+        let cmd = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
         std::process::Command::new(cmd)
             .arg(name)
             .output()
@@ -111,14 +119,61 @@ mod config {
 }
 
 const APP_NAME: &str = "dev";
-const APP_VERSION: &str = "1.7.0";
+const APP_VERSION: &str = "2.0.0";
+
+const LOGO: &str = r#"
+    ____
+   |  _ \ _____   _____ _ __ _ __   ___
+   | |_) / _ \ \ /\ / / _ \ '__| '_ \ / _ \
+   |  _ <  __/\ V  V /  __/ |  | |_) |  __/
+   |_| \_\___| \_/\_/ \___|_|  | .__/ \___|
+"#;
+
+fn header(title: &str) -> String {
+    let trunc = if title.len() > 30 {
+        &title[..30]
+    } else {
+        title
+    };
+    let prefix = format!("╔══ {} ", trunc);
+    let padding = (48usize).saturating_sub(prefix.len() + 1);
+    let rule = "═".repeat(padding);
+    format!("{}{}╗", prefix, rule)
+}
+
+fn spinner(msg: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    pb.set_message(msg.to_string());
+    pb
+}
+
+fn with_spinner<T, F: FnOnce() -> AppResult<T>>(msg: &str, work: F) -> AppResult<T> {
+    let pb = spinner(msg);
+    match work() {
+        Ok(v) => {
+            pb.finish_and_clear();
+            println!("{} {}", "✓".green().bold(), msg);
+            Ok(v)
+        }
+        Err(e) => {
+            pb.finish_and_clear();
+            println!("{} {}", "✗".red().bold(), msg);
+            Err(e)
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
     name = APP_NAME,
     version = APP_VERSION,
     about = "จัดการ workspace — สร้าง ค้นหา จัดเก็บ ทำความสะอาด",
-    long_about = "dev คือ CLI ศูนย์กลาง workspace สำหรับจัดการ projects, assets, docs และ archive\n\nคำสั่งหลัก:\n  new  — สร้างรายการใหม่ (wizard แบบ step-by-step)\n  list — แสดงรายการทั้งหมด (กรองตามประเภท)\n  find  — ค้นหารายการใน registry\n  glob  — ค้นหาไฟล์ตามชื่อ\n  grep  — ค้นหาข้อความในไฟล์\n  archive — บีบอัดและเก็บเข้าหมวด archive\n  clean — ล้างไฟล์ขยะ (preview ก่อนเสมอ)\n\nคำสั่งขั้นสูง: vendor, benchmark, dedup, system, completion\n\nพิมพ์ 'dev --completion bash' เพื่อตั้ง auto-complete ใน shell",
+    long_about = "filz คือ CLI ศูนย์กลาง workspace สำหรับจัดการ projects, assets, docs และ archive\n\nคำสั่งหลัก:\n  new  — สร้างรายการใหม่ (wizard แบบ step-by-step)\n  list — แสดงรายการทั้งหมด (กรองตามประเภท)\n  find  — ค้นหารายการใน registry\n  glob  — ค้นหารายการตามชื่อ\n  grep  — ค้นหาข้อความในไฟล์\n  archive — บีบอัดและเก็บเข้าหมวด archive\n  clean — ล้างไฟล์ขยะ (preview ก่อนเสมอ)\n\nคำสั่งขั้นสูง: vendor, benchmark, dedup, system, completion\n\nพิมพ์ 'filz --completion bash' เพื่อตั้ง auto-complete ใน shell",
     disable_help_flag = true,
     disable_version_flag = true
 )]
@@ -137,6 +192,7 @@ struct Cli {
 enum Commands {
     /// สร้างรายการใหม่แบบ wizard (step-by-step)
     /// เลือกประเภทงาน → เลือก template → ดู path ที่จะสร้าง → ยืนยัน
+    #[command(alias = "n")]
     New {
         /// ตั้งชื่อรายการ (ข้ามได้ จะถามแบบ interactive)
         #[arg(long)]
@@ -152,31 +208,37 @@ enum Commands {
         yes: bool,
     },
 
-    /// เพิ่ม item เข้า registry (ใช้สำหรับเพิ่ม subfolder ให้รายการเดิม)
+    /// เพิ่ม item เข้า registry เพื่อให้ filz เฝ้าดู path หรือ subfolder ต่อไป
     Add {
         /// ชื่อรายการใน registry
         #[arg(long)]
         name: String,
-        /// เพิ่ม subfolder (เช่น --part src)
+        /// path ใหม่สำหรับ item ใด ๆ ที่ต้องการเฝ้าดู
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+        /// เพิ่ม subfolder ใน item ที่อยู่ใน registry (เช่น --part src)
         #[arg(long, value_name = "FOLDER")]
         part: Option<String>,
     },
 
-    /// แก้ไข properties ของ item ใน registry
+    /// ตั้งขอบเขตของ item ที่ filz จะจัดการ/เฝ้าดู
+    /// ใช้เพื่อปรับ scope ของ item ไม่ใช่แค่ set ค่าทั่วไป
+    #[command(alias = "scope")]
     Set {
         /// ชื่อ item
         #[arg(long)]
         name: String,
-        /// แก้ type
+        /// ปรับ type ของ item ที่กำลังเฝ้าดู
         #[arg(long, value_name = "TYPE")]
         r#type: Option<String>,
-        /// แก้ path
+        /// ปรับ path ของ item ที่กำลังเฝ้าดู
         #[arg(long, value_name = "PATH")]
         path: Option<PathBuf>,
     },
 
     /// แสดงรายการ (browse-first)
     /// แสดงเฉพาะรายการที่ยัง active ซ่อน archive โดยอัตโนมัติ
+    #[command(alias = "ls")]
     List {
         /// แสดงทั้งหมดรวม archive
         #[arg(long, action = ArgAction::SetTrue)]
@@ -188,6 +250,7 @@ enum Commands {
 
     /// ค้นหารายการ (search-first)
     /// ค้นหาจากชื่อ, ประเภท, path หรือ template
+    #[command(alias = "f")]
     Find {
         /// คำค้นหา
         query: String,
@@ -198,6 +261,7 @@ enum Commands {
 
     /// ค้นหาไฟล์ตามชื่อ (find files)
     /// ค้นหาไฟล์ใน workspace ตามรูปแบบชื่อ เช่น "*.ts", "main*"
+    #[command(alias = "g")]
     Glob {
         /// รูปแบบชื่อไฟล์ (ใช้ * เป็นตัวแทนอักขระใดๆ)
         pattern: String,
@@ -208,6 +272,7 @@ enum Commands {
 
     /// ค้นหาข้อความในไฟล์ (search text)
     /// ค้นหาคำหรือประโยคในเนื้อหาไฟล์ (ใช้ rg ถ้ามี, ไม่งั้นใช้ built-in)
+    #[command(alias = "gr")]
     Grep {
         /// คำหรือรูปแบบที่ต้องการค้นหา
         pattern: String,
@@ -310,7 +375,7 @@ enum Commands {
         yes: bool,
     },
 
-    /// แสดง template ที่มี (ใช้กับ `dev new`)
+    /// แสดง template ที่มี (ใช้กับ `filz new`)
     Templates,
 
     /// จัดการ ignore patterns สำหรับการค้นหา
@@ -329,7 +394,13 @@ enum Commands {
         /// Shell ที่ต้องการ: bash, fish, zsh, powershell
         #[arg(value_enum)]
         shell: Shell,
+        /// บันทึก script ที่สร้างลงไฟล์ แทนแสดงใน stdout
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
+
+    /// ทดสอบประสิทธิภาพระบบ (benchmark)
+    Benchmark,
 }
 
 #[derive(Subcommand, Debug)]
@@ -506,11 +577,7 @@ fn run() -> AppResult<()> {
             cmd_new(&theme, name, r#type, template, yes)?;
         }
 
-        Some(Commands::Add {
-            name,
-            path,
-            part,
-        }) => {
+        Some(Commands::Add { name, path, part }) => {
             cmd_add(name, path, part)?;
         }
 
@@ -530,7 +597,13 @@ fn run() -> AppResult<()> {
             cmd_grep(pattern, path)?;
         }
 
-        Some(Commands::Archive { name, path, format, output, yes }) => {
+        Some(Commands::Archive {
+            name,
+            path,
+            format,
+            output,
+            yes,
+        }) => {
             cmd_archive(&theme, name, path, format, output, yes)?;
         }
 
@@ -551,7 +624,14 @@ fn run() -> AppResult<()> {
             cmd_vendor(action)?;
         }
 
-        Some(Commands::Git { status, add, commit, push, pull, log }) => {
+        Some(Commands::Git {
+            status,
+            add,
+            commit,
+            push,
+            pull,
+            log,
+        }) => {
             cmd_git(status, add, commit, push, pull, log)?;
         }
 
@@ -559,11 +639,7 @@ fn run() -> AppResult<()> {
             cmd_tools()?;
         }
 
-        Some(Commands::Set {
-            name,
-            r#type,
-            path,
-        }) => {
+        Some(Commands::Set { name, r#type, path }) => {
             cmd_set(name, r#type, path)?;
         }
 
@@ -594,8 +670,8 @@ fn run() -> AppResult<()> {
             cmd_ignore(list, add, remove)?;
         }
 
-        Some(Commands::Completion { shell }) => {
-            print_completion(shell);
+        Some(Commands::Completion { shell, output }) => {
+            print_completion(shell, output)?;
         }
     }
 
@@ -603,31 +679,142 @@ fn run() -> AppResult<()> {
 }
 
 fn print_help_hint() {
-    println!("{}", "dev — จัดการ workspace แบบ step-by-step".cyan().bold());
+    println!("{}", LOGO.cyan().bold());
+    println!("{}", "filz workspace manager   v2.0.0".dimmed());
     println!();
-    println!("{}", "คำสั่งหลัก (primary):".bold());
-    println!("  {} — สร้างรายการใหม่ (wizard แบบมีขั้นตอน)", "dev new".green().bold());
-    println!("  {} — แสดงรายการ (กรองตามประเภท)", "dev list".green().bold());
-    println!("  {} — ค้นหารายการใน registry", "dev find".green().bold());
-    println!("  {} — ค้นหาไฟล์ตามชื่อ", "dev glob".green().bold());
-    println!("  {} — ค้นหาข้อความในไฟล์", "dev grep".green().bold());
-    println!("  {} — บีบอัดและเก็บเข้าหมวด archive (preview ก่อนเสมอ)", "dev archive".green().bold());
-    println!("  {} — ล้างไฟล์ขยะ (preview ก่อนเสมอ)", "dev clean".green().bold());
+
+    let reg = match load_registry() {
+        Ok(r) => r,
+        Err(_) => Registry::default(),
+    };
+
+    if !reg.items.is_empty() {
+        let total_items = reg.items.len();
+        let total_size: u64 = reg
+            .items
+            .values()
+            .map(|it| dir_size_bytes(Path::new(&it.path)))
+            .sum();
+        println!(
+            "{}",
+            format!(
+                "[workspace]  {}  {} projects • {:.1} MB",
+                workspace_root().display(),
+                total_items,
+                bytes_to_mb(total_size)
+            )
+            .dimmed()
+        );
+        println!();
+
+        let active: Vec<_> = reg
+            .items
+            .values()
+            .filter(|it| !it.category_path.contains("archive"))
+            .collect();
+        let archived: Vec<_> = reg
+            .items
+            .values()
+            .filter(|it| it.category_path.contains("archive"))
+            .collect();
+
+        if !active.is_empty() {
+            println!("{}", "ACTIVE".bold());
+            for it in active.iter().take(5) {
+                let size_mb = bytes_to_mb(dir_size_bytes(Path::new(&it.path)));
+                let date = it.created_at.split('T').next().unwrap_or("");
+                println!(
+                    "  {}  [{}:{}]  {:.1} MB  {}",
+                    it.name.bold(),
+                    it.type_,
+                    it.stack.dimmed(),
+                    size_mb,
+                    date.dimmed()
+                );
+            }
+            if active.len() > 5 {
+                println!(
+                    "  {} {}",
+                    "...".dimmed(),
+                    format!("+{} more", active.len() - 5).dimmed()
+                );
+            }
+            println!();
+        }
+
+        if !archived.is_empty() {
+            println!("{} {} items", "ARCHIVE".bold(), archived.len());
+            for it in archived.iter().take(5) {
+                let size_mb = bytes_to_mb(dir_size_bytes(Path::new(&it.path)));
+                println!("  {}  {:.1} MB", it.name.dimmed(), size_mb);
+            }
+            if archived.len() > 5 {
+                println!(
+                    "  {} {}",
+                    "...".dimmed(),
+                    format!("+{} more", archived.len() - 5).dimmed()
+                );
+            }
+            println!();
+        }
+    }
+
+    println!("{}", "QUICK START".bold());
+    println!(
+        "  {} {}",
+        "filz new".green().bold(),
+        "  scaffold a project (interactive wizard)"
+    );
+    println!(
+        "  {} {}",
+        "filz new --template next".green().bold(),
+        "  skip prompts, pick a template by name"
+    );
+    println!(
+        "  {} {}",
+        "filz new --name api --type work --yes".green().bold(),
+        "  create without prompts"
+    );
+    println!(
+        "  {} {}",
+        "filz list".green().bold(),
+        "  see what you created"
+    );
+    println!(
+        "  {} {}",
+        "filz find <name>".green().bold(),
+        "  search the registry"
+    );
+    println!(
+        "  {} {}",
+        "filz glob \"*.ts\"".green().bold(),
+        "  find files by name"
+    );
+    println!(
+        "  {} {}",
+        "filz grep \"TODO\"".green().bold(),
+        "  search file contents"
+    );
+    println!(
+        "  {} {}",
+        "filz clean".green().bold(),
+        "  reclaim disk (preview first)"
+    );
     println!();
-    println!("{}", "คำสั่งขั้นสูง (advanced):".bold());
-    println!("  vendor  — หาเครื่องมือ (ค้นหาใน vendor/, PATH, apt)");
-    println!("  benchmark — ทดสอบประสิทธิภาพ (diagnostic)");
-    println!("  dedup   — สแกนและลบไฟล์ซ้ำ");
-    println!("  system  — จัดการ cache และระบบ");
-    println!("  git     — จัดการ git");
-    println!("  tools   — ตรวจ toolchain ที่ติดตั้ง");
-    println!("  check   — ตรวจความถูกต้องของ registry");
-    println!("  ignore  — จัดการ ignore patterns");
+    println!("{}", "PRIMARY                    ADVANCED".bold());
+    println!("  new  add  list  find      vendor  benchmark  dedup  system");
+    println!("  glob grep archive clean   doctor  tools  check  ignore");
+    println!("                               git  templates  completion");
     println!();
-    println!("{}", "คำสั่งที่มีประโยชน์สำหรับผู้ใช้ทั่วไป:".bold());
-    println!("  {} — ตั้ง auto-complete ใน shell (Bash/Fish/Zsh/PowerShell)", "dev --completion bash".green().bold());
-    println!("  {} — ดู template ที่มีสำหรับสร้าง project", "dev templates".green().bold());
-    println!("  {} — ตรวจสุขภาพระบบ", "dev doctor".green().bold());
+    println!("{}", "Aliases: ls=list, f=find, g=glob, gr=grep".dimmed());
+    println!("  {} {}", "filz ls".cyan(), "  same as 'filz list'");
+    println!(
+        "  {} {}",
+        "filz gr README".cyan(),
+        "  same as 'filz grep README'"
+    );
+    println!();
+    println!("{}", "Run 'filz <command> --help' for details.".dimmed());
 }
 
 fn now_rfc3339() -> String {
@@ -1028,7 +1215,7 @@ fn create_rust_project(path: &Path, name: &str) -> AppResult<()> {
     ensure_dir(&src)?;
     fs::write(
         src.join("main.rs"),
-        "fn main() {\n    println!(\"Hello from dev manager\");\n}\n",
+        "fn main() {\n    println!(\"Hello from filz manager\");\n}\n",
     )?;
     Ok(())
 }
@@ -1172,21 +1359,40 @@ fn load_templates() -> Vec<ProjectTemplate> {
     templates
 }
 
+fn render_template_value(value: &str, name: &str, tmpl: &ProjectTemplate, now: &str) -> String {
+    let replacements: Vec<(&str, String)> = vec![
+        ("name", name.to_string()),
+        ("type", tmpl.r#type.clone()),
+        ("stack", tmpl.stack.clone()),
+        ("created", now.to_string()),
+    ];
+
+    let mut result = value.to_string();
+    for (key, val) in &replacements {
+        result = result.replace(&format!("{{{{{}}}}}", key), val);
+        result = result.replace(&format!("{{{{{}}}}}", key.to_uppercase()), val);
+        result = result.replace(&key.to_uppercase(), val);
+    }
+    result
+}
+
 fn apply_template(tmpl: &ProjectTemplate, name: &str, path: &Path) -> AppResult<()> {
     ensure_dir(path)?;
 
+    let now = now_rfc3339();
     for folder in &tmpl.folders {
-        let folder_path = path.join(folder);
+        let rendered_folder = render_template_value(folder, name, tmpl, &now);
+        let folder_path = path.join(rendered_folder);
         ensure_dir(&folder_path)?;
     }
 
-    let now = now_rfc3339();
-        for file in &tmpl.files {
-        let file_path = path.join(&file.path);
+    for file in &tmpl.files {
+        let rendered_path = render_template_value(&file.path, name, tmpl, &now);
+        let file_path = path.join(&rendered_path);
         if let Some(parent) = file_path.parent() {
             ensure_dir(parent)?;
         }
-        // Build replacement map and apply replacements in a safe order.
+
         let mut content = file.content.clone();
         let replacements: Vec<(&str, String)> = vec![
             ("name", name.to_string()),
@@ -1196,11 +1402,8 @@ fn apply_template(tmpl: &ProjectTemplate, name: &str, path: &Path) -> AppResult<
         ];
 
         for (key, val) in &replacements {
-            // {{key}}
             content = content.replace(&format!("{{{{{}}}}}", key), val);
-            // {{KEY}} (uppercase)
             content = content.replace(&format!("{{{{{}}}}}", key.to_uppercase()), val);
-            // KEY (uppercase simple token)
             content = content.replace(&key.to_uppercase(), val);
         }
         fs::write(&file_path, content)?;
@@ -1225,7 +1428,7 @@ fn cmd_new(
     } else {
         let idx = Select::with_theme(theme)
             .with_prompt("ขั้นตอนที่ 1: เลือกประเภทงาน")
-            .items(&types)
+            .items(types)
             .default(0)
             .interact()?;
         types[idx].to_string()
@@ -1234,7 +1437,10 @@ fn cmd_new(
     // ── Step 2: Choose template or stack ──
     let (final_stack, template_used) = if let Some(tmpl_name) = template {
         // User specified a template name directly
-        if let Some(tmpl) = templates.iter().find(|t| t.name == tmpl_name.to_lowercase()) {
+        if let Some(tmpl) = templates
+            .iter()
+            .find(|t| t.name == tmpl_name.to_lowercase())
+        {
             (tmpl.stack.clone(), true)
         } else {
             // Treat as stack name if no matching template
@@ -1252,7 +1458,7 @@ fn cmd_new(
 
         let choices: Vec<String> = if !tmpl_names.is_empty() {
             let mut choices = vec!["(ใช้ template จากรายการด้านล่าง)".to_string()];
-            choices.extend(tmpl_names);
+            choices.extend(tmpl_names.clone());
             choices.extend(stack_options.iter().map(|s| format!("(stack) {}", s)));
             choices
         } else {
@@ -1260,7 +1466,10 @@ fn cmd_new(
         };
 
         let idx = Select::with_theme(theme)
-            .with_prompt(format!("ขั้นตอนที่ 2: เลือก template หรือ stack สำหรับ [{}]", final_type))
+            .with_prompt(format!(
+                "ขั้นตอนที่ 2: เลือก template หรือ stack สำหรับ [{}]",
+                final_type
+            ))
             .items(&choices)
             .default(0)
             .interact()?;
@@ -1285,7 +1494,9 @@ fn cmd_new(
     let final_name = if let Some(n) = name {
         sanitize_name(&n)?
     } else {
-        let input: String = Input::with_theme(theme).with_prompt("ขั้นตอนที่ 3: ตั้งชื่อรายการ").interact_text()?;
+        let input: String = Input::with_theme(theme)
+            .with_prompt("ขั้นตอนที่ 3: ตั้งชื่อรายการ")
+            .interact_text()?;
         sanitize_name(&input)?
     };
 
@@ -1294,15 +1505,26 @@ fn cmd_new(
     // Preview
     println!();
     println!("{}", "╔══════════════════════════════════════╗".cyan());
-    println!("{}", "║       สรุปการสร้างรายการ                ║".cyan().bold());
+    println!(
+        "{}",
+        "║       สรุปการสร้างรายการ                ║".cyan().bold()
+    );
     println!("{}", "╠══════════════════════════════════════╣".cyan());
     println!("{}  {}", "  ชื่อ:".bold(), final_name);
     println!("{}  {}", "  ประเภท:", color_for_type(&final_type));
     println!("{}  {}", "  Stack:", final_stack.dimmed());
     if template_used {
-        println!("{}  {}", "  Template:".green(), "ใช้ template จาก YAML".green());
+        println!(
+            "{}  {}",
+            "  Template:".green(),
+            "ใช้ template จาก YAML".green()
+        );
     }
-    println!("{}  {}", "  ที่เก็บ:".dimmed(), proj_path.display().dimmed());
+    println!(
+        "{}  {}",
+        "  ที่เก็บ:".dimmed(),
+        format!("{}", proj_path.display()).dimmed()
+    );
     println!("{}  {}", "  หมวด:", category.dimmed());
     println!("{}", "╚══════════════════════════════════════╝".cyan());
     println!();
@@ -1370,7 +1592,9 @@ fn cmd_add(name: String, path: Option<PathBuf>, part: Option<String>) -> AppResu
     // If --part, add subfolder to existing item
     if let Some(folder) = part {
         let reg = load_registry()?;
-        let item = reg.items.get(&name)
+        let item = reg
+            .items
+            .get(&name)
             .ok_or_else(|| AppError::Message(format!("ไม่พบ item: {}", name)))?;
         let base = PathBuf::from(&item.path);
         let sub = base.join(&folder);
@@ -1398,7 +1622,7 @@ fn cmd_add(name: String, path: Option<PathBuf>, part: Option<String>) -> AppResu
         reg.items.insert(name.clone(), updated);
     } else {
         return Err(AppError::Message(format!(
-            "ไม่พบ item: {} ใน registry ใช้ 'dev new' สร้างก่อน",
+            "ไม่พบ item: {} ใน registry ใช้ 'filz new' สร้างก่อน",
             name
         )));
     }
@@ -1414,8 +1638,11 @@ fn cmd_add(name: String, path: Option<PathBuf>, part: Option<String>) -> AppResu
 }
 
 fn cmd_benchmark() -> AppResult<()> {
-    println!("{}", "=== Diagnostic: Performance Benchmark ===".dimmed().bold());
-    println!("{}", "(เครื่องมือนี้สำหรับวัดประสิทธิภาพเท่านั้น ไม่เกี่ยวกับงานหลัก)".dimmed());
+    println!("{}", header("Diagnostic: Performance Benchmark"));
+    println!(
+        "{}",
+        "(เครื่องมือนี้สำหรับวัดประสิทธิภาพเท่านั้น ไม่เกี่ยวกับงานหลัก)".dimmed()
+    );
     println!();
 
     use std::time::Instant;
@@ -1425,29 +1652,40 @@ fn cmd_benchmark() -> AppResult<()> {
     std::fs::create_dir_all(&bench_dir).unwrap();
 
     // --- Create test data: 10K files, ~100MB total ---
-    println!("{}", ">> Creating test data...".dimmed());
-    let t_create = Instant::now();
-    for i in 0..10_000 {
-        let dir = bench_dir.join(format!("dir-{:04}", i / 100));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(format!("file-{:04}.txt", i));
-        // ~10KB per file = ~100MB total
-        let content = format!("line1\nTARGET_LINE_{}\n{}\n", i, "x".repeat(10000));
-        std::fs::write(&file, &content).unwrap();
-    }
-    let create_t = t_create.elapsed();
-    let total_size: u64 = std::fs::read_dir(&bench_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .flat_map(|e| std::fs::read_dir(e.path()).ok().into_iter().flatten().filter_map(|e| e.ok()))
-        .filter_map(|e| std::fs::metadata(e.path()).ok().map(|m| m.len()))
-        .sum();
-    println!("  {} files, {:.1} MB total, created in {:?}",
-        "10,000".bold(), total_size as f64 / (1024.0 * 1024.0), create_t);
+    let total_size = with_spinner("creating test data", || {
+        let t_create = Instant::now();
+        for i in 0..10_000 {
+            let dir = bench_dir.join(format!("dir-{:04}", i / 100));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join(format!("file-{:04}.txt", i));
+            let content = format!("line1\nTARGET_LINE_{}\n{}\n", i, "x".repeat(10000));
+            std::fs::write(&file, &content).unwrap();
+        }
+        let create_t = t_create.elapsed();
+        let total_size: u64 = std::fs::read_dir(&bench_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .flat_map(|e| {
+                std::fs::read_dir(e.path())
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+            })
+            .filter_map(|e| std::fs::metadata(e.path()).ok().map(|m| m.len()))
+            .sum();
+        println!(
+            "  {} files, {:.1} MB total, created in {:?}",
+            "10,000".bold(),
+            total_size as f64 / (1024.0 * 1024.0),
+            create_t
+        );
+        Ok(total_size)
+    })?;
     println!();
 
     // --- Test 1: Content Search (grep) ---
-    println!("{}", "=== Test 1: Content Search (find 'TARGET_LINE_5000') ===".cyan().bold());
+    println!("{}", header("Test 1: Content Search"));
     let pattern = "TARGET_LINE_5000";
 
     // Our grep (uses rg)
@@ -1466,7 +1704,17 @@ fn cmd_benchmark() -> AppResult<()> {
     let find_grep_t = {
         let t0 = Instant::now();
         let _ = std::process::Command::new("find")
-            .args([&bench_dir.to_string_lossy(), "-type", "f", "-exec", "grep", "-l", pattern, "{}", "+"])
+            .args([
+                &bench_dir.to_string_lossy(),
+                "-type",
+                "f",
+                "-exec",
+                "grep",
+                "-l",
+                pattern,
+                "{}",
+                "+",
+            ])
             .output();
         t0.elapsed()
     };
@@ -1491,7 +1739,9 @@ fn cmd_benchmark() -> AppResult<()> {
                     if p.is_dir() {
                         walk_search(&p, pattern, count);
                     } else if let Ok(content) = std::fs::read_to_string(&p) {
-                        if content.contains(pattern) { *count += 1; }
+                        if content.contains(pattern) {
+                            *count += 1;
+                        }
                     }
                 }
             }
@@ -1501,7 +1751,7 @@ fn cmd_benchmark() -> AppResult<()> {
     };
 
     print_comparison(&[
-        ("dev grep (rg-based)", our_grep_t),
+        ("filz grep (rg-based)", our_grep_t),
         ("rg (raw)", raw_rg_t),
         ("find + grep", find_grep_t),
         ("pure Rust fallback", rust_grep_t),
@@ -1510,7 +1760,7 @@ fn cmd_benchmark() -> AppResult<()> {
     println!();
 
     // --- Test 2: File Listing (glob) ---
-    println!("{}", "=== Test 2: File Listing (glob '*.txt') ===".cyan().bold());
+    println!("{}", header("Test 2: File Listing"));
 
     // Our glob (pure Rust walk)
     let our_glob_t = {
@@ -1520,8 +1770,11 @@ fn cmd_benchmark() -> AppResult<()> {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let p = entry.path();
-                    if p.is_dir() { walk_glob(&p, count); }
-                    else if p.extension().and_then(|e| e.to_str()) == Some("txt") { *count += 1; }
+                    if p.is_dir() {
+                        walk_glob(&p, count);
+                    } else if p.extension().and_then(|e| e.to_str()) == Some("txt") {
+                        *count += 1;
+                    }
                 }
             }
         }
@@ -1548,7 +1801,7 @@ fn cmd_benchmark() -> AppResult<()> {
     };
 
     print_comparison(&[
-        ("dev glob (Rust)", our_glob_t),
+        ("filz glob (Rust)", our_glob_t),
         ("find -name", find_name_t),
         ("ls -R", ls_r_t),
     ]);
@@ -1556,19 +1809,30 @@ fn cmd_benchmark() -> AppResult<()> {
     println!();
 
     // --- Test 3: Registry Search vs OS Search ---
-    println!("{}", "=== Test 3: Registry Search vs OS find+grep ===".cyan().bold());
+    println!("{}", header("Test 3: Registry Search"));
 
     // Build registry with 10K items
     let mut items = HashMap::new();
     for i in 0..10_000 {
         let name = format!("project-{:04}", i);
-        let type_ = match i % 5 { 0 => "work", 1 => "doc", 2 => "asset", 3 => "personal", _ => "lab" };
-        items.insert(name.clone(), Item {
-            name, type_: type_.into(), stack: "rust".into(),
-            category_path: format!("01-projects/01-{}", type_),
-            path: format!("/data/projects/{:04}", i),
-            created_at: "2026-01-01T00:00:00Z".into(),
-        });
+        let type_ = match i % 5 {
+            0 => "work",
+            1 => "doc",
+            2 => "asset",
+            3 => "personal",
+            _ => "lab",
+        };
+        items.insert(
+            name.clone(),
+            Item {
+                name,
+                type_: type_.into(),
+                stack: "rust".into(),
+                category_path: format!("01-projects/01-{}", type_),
+                path: format!("/data/projects/{:04}", i),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            },
+        );
     }
     let reg = Registry { items };
 
@@ -1605,23 +1869,28 @@ fn cmd_benchmark() -> AppResult<()> {
 
     let speedup = os_search_t.as_secs_f64() / our_reg_t.as_secs_f64();
     println!("  Registry (10K items, 1000 lookups):");
-    println!("    dev find (protobuf+HashMap): {:>8.2?}", our_reg_t);
+    println!("    filz find (protobuf+HashMap): {:>8.2?}", our_reg_t);
     println!("    OS brute-force:             {:>8.2?}", os_search_t);
     println!("    Speedup:                    {:>8.1}x", speedup);
     println!();
 
     // --- Test 4: Registry Scale ---
-    println!("{}", "=== Test 4: Registry Scale (decode time) ===".cyan().bold());
+    println!("{}", header("Test 4: Registry Scale"));
     for &n in &[1_000, 10_000, 100_000, 1_000_000] {
         let mut items = HashMap::new();
         for i in 0..n {
             let name = format!("item-{:07}", i);
-            items.insert(name.clone(), Item {
-                name, type_: "work".into(), stack: "rust".into(),
-                category_path: "01-projects/01-work".into(),
-                path: format!("/data/projects/{:07}", i),
-                created_at: "2026-01-01T00:00:00Z".into(),
-            });
+            items.insert(
+                name.clone(),
+                Item {
+                    name,
+                    type_: "work".into(),
+                    stack: "rust".into(),
+                    category_path: "01-projects/01-work".into(),
+                    path: format!("/data/projects/{:07}", i),
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                },
+            );
         }
         let reg = Registry { items };
         let pb = reg.to_proto();
@@ -1646,8 +1915,13 @@ fn cmd_benchmark() -> AppResult<()> {
         } else {
             format!("{} KB", file_size / 1024)
         };
-        println!("  {:>8} items | {:>6} | decode {:>7.2?} | search {:>7.2?} per op",
-            n, size_str, decode_t, search_t / 1000);
+        println!(
+            "  {:>8} items | {:>6} | decode {:>7.2?} | search {:>7.2?} per op",
+            n,
+            size_str,
+            decode_t,
+            search_t / 1000
+        );
     }
 
     println!();
@@ -1681,8 +1955,16 @@ fn cmd_benchmark() -> AppResult<()> {
     });
 
     let results_path = bench_dir.join("benchmark_results.json");
-    std::fs::write(&results_path, serde_json::to_string_pretty(&results).unwrap()).unwrap();
-    println!("{} {}", "✓ Results saved to:".green(), results_path.display());
+    std::fs::write(
+        &results_path,
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+    println!(
+        "{} {}",
+        "✓ Results saved to:".green(),
+        results_path.display()
+    );
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&bench_dir);
@@ -1693,7 +1975,11 @@ fn cmd_benchmark() -> AppResult<()> {
 }
 
 fn print_comparison(results: &[(&str, std::time::Duration)]) {
-    let fastest = results.iter().map(|(_, d)| *d).min().unwrap_or(std::time::Duration::ZERO);
+    let fastest = results
+        .iter()
+        .map(|(_, d)| *d)
+        .min()
+        .unwrap_or(std::time::Duration::ZERO);
     for &(name, dur) in results {
         let factor = dur.as_secs_f64() / fastest.as_secs_f64();
         let bar_len = (factor * 20.0).min(60.0) as usize;
@@ -1753,36 +2039,21 @@ fn render_table(headers: &[&str], rows: &[Vec<String>]) {
         return;
     }
 
-    // Build pipe-separated output for column -t
-    let mut out = String::new();
-    out.push_str(&headers.join(" | "));
-    out.push('\n');
-    out.push_str(&headers.iter().map(|h| "-".repeat(h.len())).collect::<Vec<_>>().join(" | "));
-    out.push('\n');
+    let mut table = Table::new();
+    table.set_header({
+        headers
+            .iter()
+            .map(|h| Cell::new(*h).add_attribute(Attribute::Bold))
+            .collect::<Vec<_>>()
+    });
     for row in rows {
-        out.push_str(&row.join(" | "));
-        out.push('\n');
+        table.add_row(
+            row.iter()
+                .map(|c| Cell::new(c.as_str()))
+                .collect::<Vec<_>>(),
+        );
     }
-
-    // Use column -t for formatting
-    let result = std::process::Command::new("column")
-        .args(["-t", "-s", "|"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.take().unwrap().write_all(out.as_bytes())?;
-            child.wait_with_output()
-        });
-
-    match result {
-        Ok(output) => print!("{}", String::from_utf8_lossy(&output.stdout)),
-        Err(_) => {
-            // Fallback: plain output
-            println!("{}", out.replace("\n", "\n"));
-        }
-    }
+    println!("{table}");
 }
 
 fn cmd_vendor(action: VendorCmd) -> AppResult<()> {
@@ -1811,56 +2082,66 @@ fn cmd_vendor(action: VendorCmd) -> AppResult<()> {
                 }
             }
 
-            println!("{}", "=== Vendor Tools ===".cyan().bold());
+            println!("{}", header("Vendor Tools"));
             render_table(&headers, &rows);
         }
 
         VendorCmd::Search { name } => {
-                println!("{}", format!("ค้นหา tool: {}", name).cyan().bold());
+            println!("{}", format!("ค้นหา tool: {}", name).cyan().bold());
 
-                // Check vendor dir
-                let vendor_path = vendor_dir.join(&name);
-                let has_vendor = vendor_path.exists();
-                if has_vendor {
-                    let size = std::fs::metadata(&vendor_path).map(|m| m.len()).unwrap_or(0);
-                    println!("  {} vendor ({:.1} KB)", "✓".green(), size as f64 / 1024.0);
-                }
+            // Check vendor dir
+            let vendor_path = vendor_dir.join(&name);
+            let has_vendor = vendor_path.exists();
+            if has_vendor {
+                let size = std::fs::metadata(&vendor_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                println!("  {} vendor ({:.1} KB)", "✓".green(), size as f64 / 1024.0);
+            }
 
-                // Check system PATH
-                let has_system = std::process::Command::new("which").arg(&name).output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-                if has_system {
-                    let path = std::process::Command::new("which").arg(&name).output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
-                    println!("  {} system ({})", "✓".green(), path);
-                }
+            // Check system PATH
+            let has_system = std::process::Command::new("which")
+                .arg(&name)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if has_system {
+                let path = std::process::Command::new("which")
+                    .arg(&name)
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                println!("  {} system ({})", "✓".green(), path);
+            }
 
-                // Check markdown docs
-                let docs_dir = vendor_dir.join("docs");
-                let md_path = docs_dir.join(format!("{}.md", name));
-                if md_path.exists() {
-                    println!("  {} doc", "✓".green());
-                }
+            // Check markdown docs
+            let docs_dir = vendor_dir.join("docs");
+            let md_path = docs_dir.join(format!("{}.md", name));
+            if md_path.exists() {
+                println!("  {} doc", "✓".green());
+            }
 
-                // If nothing found, offer to install
-                if !has_vendor && !has_system {
-                    println!("  {} ไม่พบ — กำลังติดตั้ง...", "→".yellow());
-                    // Try to install via apt
-                    let status = std::process::Command::new("apt")
-                        .args(["install", "-y", &name])
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            println!("  {} ติดตั้ง {} สำเร็จ", "✓".green(), name);
-                        }
-                        _ => {
-                            println!("  {} ติดตั้งไม่ได้ — ลอง: apt install {} หรือ download ด้วยมือ", "✗".red(), name);
-                        }
+            // If nothing found, offer to install
+            if !has_vendor && !has_system {
+                println!("  {} ไม่พบ — กำลังติดตั้ง...", "→".yellow());
+                // Try to install via apt
+                let status = std::process::Command::new("apt")
+                    .args(["install", "-y", &name])
+                    .status();
+                match status {
+                    Ok(s) if s.success() => {
+                        println!("  {} ติดตั้ง {} สำเร็จ", "✓".green(), name);
+                    }
+                    _ => {
+                        println!(
+                            "  {} ติดตั้งไม่ได้ — ลอง: apt install {} หรือ download ด้วยมือ",
+                            "✗".red(),
+                            name
+                        );
                     }
                 }
             }
+        }
 
         VendorCmd::Store { name, url } => {
             let docs_dir = vendor_dir.join("docs");
@@ -1915,7 +2196,7 @@ Size: {} bytes
         }
 
         VendorCmd::Dedup => {
-            println!("{}", "=== Vendor Dedup ===".cyan().bold());
+            println!("{}", header("Vendor Dedup"));
 
             if !vendor_dir.exists() {
                 println!("{}", "vendor/ ไม่มี".yellow());
@@ -1936,7 +2217,8 @@ Size: {} bytes
             }
 
             // Group by size (potential duplicates)
-            let mut size_map: std::collections::HashMap<u64, Vec<&str>> = std::collections::HashMap::new();
+            let mut size_map: std::collections::HashMap<u64, Vec<&str>> =
+                std::collections::HashMap::new();
             for (name, size, _) in &files {
                 size_map.entry(*size).or_default().push(name);
             }
@@ -1978,40 +2260,48 @@ Size: {} bytes
 fn cmd_dedup(path: Option<PathBuf>, yes: bool) -> AppResult<()> {
     use std::collections::HashMap;
 
-    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    println!("{} {}", "=== Dedup Scan ===".cyan().bold(), root.display());
+    let root =
+        path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    println!("{} {}", header("Dedup Scan"), root.display());
 
-    // Collect files with sizes
-    let mut size_map: HashMap<u64, Vec<String>> = HashMap::new();
-    let mut total_files = 0usize;
+    let (_, total_files, dupes) = with_spinner("scanning for duplicates", || {
+        let mut size_map: HashMap<u64, Vec<String>> = HashMap::new();
+        let mut total_files = 0usize;
 
-    fn walk(dir: &Path, size_map: &mut HashMap<u64, Vec<String>>, total: &mut usize) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                let name = p.file_name().unwrap().to_string_lossy();
-                if should_skip_dir(&name) { continue; }
-                if p.is_dir() {
-                    walk(&p, size_map, total);
-                } else if let Ok(meta) = std::fs::metadata(&p) {
-                    let size = meta.len();
-                    if size > 0 {
-                        size_map.entry(size).or_default().push(p.to_string_lossy().to_string());
-                        *total += 1;
+        fn walk(dir: &Path, size_map: &mut HashMap<u64, Vec<String>>, total: &mut usize) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    let name = p.file_name().unwrap().to_string_lossy();
+                    if should_skip_dir(&name) {
+                        continue;
+                    }
+                    if p.is_dir() {
+                        walk(&p, size_map, total);
+                    } else if let Ok(meta) = std::fs::metadata(&p) {
+                        let size = meta.len();
+                        if size > 0 {
+                            size_map
+                                .entry(size)
+                                .or_default()
+                                .push(p.to_string_lossy().to_string());
+                            *total += 1;
+                        }
                     }
                 }
             }
         }
-    }
 
-    walk(&root, &mut size_map, &mut total_files);
+        walk(&root, &mut size_map, &mut total_files);
 
-    // Find duplicates
-    let mut dupes: Vec<(u64, Vec<String>)> = size_map
-        .into_iter()
-        .filter(|(_, v)| v.len() > 1)
-        .collect();
-    dupes.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut dupes: Vec<(u64, Vec<String>)> = size_map
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.len() > 1)
+            .collect();
+        dupes.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok((size_map, total_files, dupes))
+    })?;
 
     let headers = vec!["Size", "Count", "Files"];
     let mut rows = Vec::new();
@@ -2025,11 +2315,28 @@ fn cmd_dedup(path: Option<PathBuf>, yes: bool) -> AppResult<()> {
         } else {
             format!("{:.1} KB", *size as f64 / 1024.0)
         };
-        let files_str = files.iter().take(2).map(|f| {
-            std::path::Path::new(f).file_name().unwrap().to_string_lossy().to_string()
-        }).collect::<Vec<_>>().join(", ");
-        let more = if files.len() > 2 { format!(" +{}", files.len() - 2) } else { String::new() };
-        rows.push(vec![size_str, files.len().to_string(), format!("{}{}", files_str, more)]);
+        let files_str = files
+            .iter()
+            .take(2)
+            .map(|f| {
+                std::path::Path::new(f)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if files.len() > 2 {
+            format!(" +{}", files.len() - 2)
+        } else {
+            String::new()
+        };
+        rows.push(vec![
+            size_str,
+            files.len().to_string(),
+            format!("{}{}", files_str, more),
+        ]);
     }
 
     render_table(&headers, &rows);
@@ -2064,8 +2371,14 @@ fn cmd_dedup(path: Option<PathBuf>, yes: bool) -> AppResult<()> {
 }
 
 fn cmd_size(top: usize, path: Option<PathBuf>) -> AppResult<()> {
-    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    println!("{} ไฟล์ขนาดใหญ่สุด {} (top {})", "📁".cyan(), root.display(), top);
+    let root =
+        path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    println!(
+        "{} ไฟล์ขนาดใหญ่สุด {} (top {})",
+        "📁".cyan(),
+        root.display(),
+        top
+    );
 
     let mut files: Vec<(String, u64)> = Vec::new();
 
@@ -2074,7 +2387,9 @@ fn cmd_size(top: usize, path: Option<PathBuf>) -> AppResult<()> {
             for entry in entries.filter_map(|e| e.ok()) {
                 let p = entry.path();
                 let name = p.file_name().unwrap().to_string_lossy();
-                if should_skip_dir(&name) { continue; }
+                if should_skip_dir(&name) {
+                    continue;
+                }
                 if p.is_dir() {
                     walk(&p, files);
                 } else if let Ok(meta) = std::fs::metadata(&p) {
@@ -2100,7 +2415,11 @@ fn cmd_size(top: usize, path: Option<PathBuf>) -> AppResult<()> {
             .unwrap_or(std::path::Path::new(path))
             .to_string_lossy()
             .to_string();
-        rows.push(vec![(i + 1).to_string(), colorize_size(*size).to_string(), short]);
+        rows.push(vec![
+            (i + 1).to_string(),
+            colorize_size(*size).to_string(),
+            short,
+        ]);
     }
 
     render_table(&headers, &rows);
@@ -2109,47 +2428,59 @@ fn cmd_size(top: usize, path: Option<PathBuf>) -> AppResult<()> {
     println!();
     println!(
         "{}",
-        format!("{} files shown, total {:.1} MB", files.len(), total as f64 / (1024.0 * 1024.0))
-            .dimmed()
+        format!(
+            "{} files shown, total {:.1} MB",
+            files.len(),
+            total as f64 / (1024.0 * 1024.0)
+        )
+        .dimmed()
     );
     Ok(())
 }
 
 fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()> {
-    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let root =
+        path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     println!("{} สแกนไฟล์ซ้ำ {} (preview ก่อน)", "🔍".cyan(), root.display());
 
-    // Group by size first (fast filter)
-    let mut size_map: HashMap<u64, Vec<String>> = HashMap::new();
-    let mut total_files = 0usize;
+    let (_, _, dupes) = with_spinner("scanning for duplicate files", || {
+        let mut size_map: HashMap<u64, Vec<String>> = HashMap::new();
+        let mut total_files = 0usize;
 
-    fn walk(dir: &Path, size_map: &mut HashMap<u64, Vec<String>>, total: &mut usize) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                let name = p.file_name().unwrap().to_string_lossy();
-                if should_skip_dir(&name) { continue; }
-                if p.is_dir() {
-                    walk(&p, size_map, total);
-                } else if let Ok(meta) = std::fs::metadata(&p) {
-                    let size = meta.len();
-                    if size > 0 {
-                        size_map.entry(size).or_default().push(p.to_string_lossy().to_string());
-                        *total += 1;
+        fn walk(dir: &Path, size_map: &mut HashMap<u64, Vec<String>>, total: &mut usize) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    let name = p.file_name().unwrap().to_string_lossy();
+                    if should_skip_dir(&name) {
+                        continue;
+                    }
+                    if p.is_dir() {
+                        walk(&p, size_map, total);
+                    } else if let Ok(meta) = std::fs::metadata(&p) {
+                        let size = meta.len();
+                        if size > 0 {
+                            size_map
+                                .entry(size)
+                                .or_default()
+                                .push(p.to_string_lossy().to_string());
+                            *total += 1;
+                        }
                     }
                 }
             }
         }
-    }
 
-    walk(&root, &mut size_map, &mut total_files);
+        walk(&root, &mut size_map, &mut total_files);
 
-    // Find actual duplicates by reading content
-    let mut dupes: Vec<(u64, Vec<String>)> = size_map
-        .into_iter()
-        .filter(|(_, v)| v.len() > 1)
-        .collect();
-    dupes.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut dupes: Vec<(u64, Vec<String>)> = size_map
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.len() > 1)
+            .collect();
+        dupes.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok((size_map, total_files, dupes))
+    })?;
 
     if dupes.is_empty() {
         println!("{}", "ไม่มีไฟล์ซ้ำ".green());
@@ -2168,11 +2499,28 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
         } else {
             format!("{:.1} KB", *size as f64 / 1024.0)
         };
-        let files_str = files.iter().take(2).map(|f| {
-            std::path::Path::new(f).file_name().unwrap().to_string_lossy().to_string()
-        }).collect::<Vec<_>>().join(", ");
-        let more = if files.len() > 2 { format!(" +{}", files.len() - 2) } else { String::new() };
-        rows.push(vec![size_str, files.len().to_string(), format!("{}{}", files_str, more)]);
+        let files_str = files
+            .iter()
+            .take(2)
+            .map(|f| {
+                std::path::Path::new(f)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if files.len() > 2 {
+            format!(" +{}", files.len() - 2)
+        } else {
+            String::new()
+        };
+        rows.push(vec![
+            size_str,
+            files.len().to_string(),
+            format!("{}{}", files_str, more),
+        ]);
     }
 
     render_table(&headers, &rows);
@@ -2180,14 +2528,21 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
     println!();
     println!(
         "{}",
-        format!("{} groups | Wasted: {:.1} MB", dupes.len(), wasted as f64 / (1024.0 * 1024.0))
-            .yellow()
+        format!(
+            "{} groups | Wasted: {:.1} MB",
+            dupes.len(),
+            wasted as f64 / (1024.0 * 1024.0)
+        )
+        .yellow()
     );
 
     // If no action specified, show preview only
     if action.is_none() {
         println!();
-        println!("{}", "นี่คือ preview — ใช้ --action delete|move|copy เพื่อดำเนินการ".dimmed());
+        println!(
+            "{}",
+            "นี่คือ preview — ใช้ --action delete|move|copy เพื่อดำเนินการ".dimmed()
+        );
         return Ok(());
     }
 
@@ -2248,7 +2603,12 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
                     copied += 1;
                 }
             }
-            println!("{} คัดลอก {} ไฟล์ไปที่ {}", "✓".green(), copied, dup_dir.display());
+            println!(
+                "{} คัดลอก {} ไฟล์ไปที่ {}",
+                "✓".green(),
+                copied,
+                dup_dir.display()
+            );
         }
         _ => {
             println!("{}", "Actions: --action delete|move|copy".dimmed());
@@ -2258,7 +2618,14 @@ fn cmd_duplicate(path: Option<PathBuf>, action: Option<String>) -> AppResult<()>
     Ok(())
 }
 
-fn cmd_git(status: bool, add: bool, commit: Option<String>, push: bool, pull: bool, log: bool) -> AppResult<()> {
+fn cmd_git(
+    status: bool,
+    add: bool,
+    commit: Option<String>,
+    push: bool,
+    pull: bool,
+    log: bool,
+) -> AppResult<()> {
     let root = config::workspace_root();
 
     // Default: show status
@@ -2329,7 +2696,8 @@ fn load_ignore_patterns() -> Vec<String> {
     let ignore_file = config::workspace_root().join(".file-cli/ignore");
     if ignore_file.exists() {
         if let Ok(content) = std::fs::read_to_string(&ignore_file) {
-            return content.lines()
+            return content
+                .lines()
                 .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
                 .map(|l| l.trim().to_string())
                 .collect();
@@ -2343,7 +2711,7 @@ fn cmd_ignore(list: bool, add: Option<String>, remove: Option<String>) -> AppRes
 
     if list {
         let patterns = load_ignore_patterns();
-        println!("{}", "=== Ignore Patterns ===".cyan().bold());
+        println!("{}", header("Ignore Patterns"));
         for p in &patterns {
             println!("  {}", p);
         }
@@ -2360,7 +2728,8 @@ fn cmd_ignore(list: bool, add: Option<String>, remove: Option<String>) -> AppRes
         }
         patterns.push(pattern.clone());
         // Remove built-in from list before saving (they're always loaded)
-        let custom: Vec<_> = patterns.into_iter()
+        let custom: Vec<_> = patterns
+            .into_iter()
             .filter(|p| !SKIP_DIRS.contains(&p.as_str()))
             .collect();
         let content: Vec<_> = custom.iter().map(|s| s.as_str()).collect();
@@ -2371,7 +2740,8 @@ fn cmd_ignore(list: bool, add: Option<String>, remove: Option<String>) -> AppRes
 
     if let Some(pattern) = remove {
         let patterns = load_ignore_patterns();
-        let custom: Vec<_> = patterns.into_iter()
+        let custom: Vec<_> = patterns
+            .into_iter()
             .filter(|p| p != &pattern && !SKIP_DIRS.contains(&p.as_str()))
             .collect();
         let content: Vec<_> = custom.iter().map(|s| s.as_str()).collect();
@@ -2383,9 +2753,17 @@ fn cmd_ignore(list: bool, add: Option<String>, remove: Option<String>) -> AppRes
     // Default: show help
     println!("{}", "Ignore — จัดการ pattern ที่ไม่ต้องการสแกน".cyan().bold());
     println!();
-    println!("  {} {}", "dev ignore --list".bold(), "แสดง patterns ทั้งหมด");
-    println!("  {} {}", "dev ignore --add node_modules".bold(), "เพิ่ม pattern");
-    println!("  {} {}", "dev ignore --remove dist".bold(), "ลบ pattern");
+    println!(
+        "  {} {}",
+        "filz ignore --list".bold(),
+        "แสดง patterns ทั้งหมด"
+    );
+    println!(
+        "  {} {}",
+        "filz ignore --add node_modules".bold(),
+        "เพิ่ม pattern"
+    );
+    println!("  {} {}", "filz ignore --remove dist".bold(), "ลบ pattern");
     println!();
     println!(" Built-in: {}", SKIP_DIRS.join(", ").dimmed());
     Ok(())
@@ -2393,7 +2771,9 @@ fn cmd_ignore(list: bool, add: Option<String>, remove: Option<String>) -> AppRes
 
 fn cmd_set(name: String, type_: Option<String>, path: Option<PathBuf>) -> AppResult<()> {
     let mut reg = load_registry()?;
-    let item = reg.items.get_mut(&name)
+    let item = reg
+        .items
+        .get_mut(&name)
         .ok_or_else(|| AppError::Message(format!("ไม่พบ item: {}", name)))?;
 
     if let Some(t) = type_ {
@@ -2406,12 +2786,7 @@ fn cmd_set(name: String, type_: Option<String>, path: Option<PathBuf>) -> AppRes
     let t = item.type_.clone();
     save_registry(&reg)?;
 
-    println!(
-        "{}",
-        format!("✓ แก้ {} -> [{}]", name, t)
-            .green()
-            .bold()
-    );
+    println!("{}", format!("✓ แก้ {} -> [{}]", name, t).green().bold());
     Ok(())
 }
 
@@ -2423,23 +2798,36 @@ fn cmd_check() -> AppResult<()> {
     for (name, item) in &reg.items {
         let p = Path::new(&item.path);
         if !p.exists() {
-            issues.push(format!("{}: path ไม่พบ ({})", name.bold(), item.path.dimmed()));
+            issues.push(format!(
+                "{}: path ไม่พบ ({})",
+                name.bold(),
+                item.path.dimmed()
+            ));
         }
     }
 
     // Check for duplicate paths
-    let mut paths: Vec<(&str, &str)> = reg.items.values().map(|it| (it.name.as_str(), it.path.as_str())).collect();
+    let mut paths: Vec<(&str, &str)> = reg
+        .items
+        .values()
+        .map(|it| (it.name.as_str(), it.path.as_str()))
+        .collect();
     paths.sort_by(|a, b| a.1.cmp(b.1));
     for i in 1..paths.len() {
-        if paths[i].1 == paths[i-1].1 {
-            issues.push(format!("{}: path ซ้ำกับ {} ({})", paths[i].0.bold(), paths[i-1].0.bold(), paths[i].1.dimmed()));
+        if paths[i].1 == paths[i - 1].1 {
+            issues.push(format!(
+                "{}: path ซ้ำกับ {} ({})",
+                paths[i].0.bold(),
+                paths[i - 1].0.bold(),
+                paths[i].1.dimmed()
+            ));
         }
     }
 
     if issues.is_empty() {
         println!("{}", "✓ Registry ถูกต้อง ไม่มีปัญหา".green().bold());
     } else {
-        println!("{}", format!("=== พบ {} ปัญหา ===", issues.len()).yellow().bold());
+        println!("{}", header(&format!("พบ {} ปัญหา", issues.len())));
         for issue in &issues {
             println!("  {}", issue);
         }
@@ -2449,14 +2837,11 @@ fn cmd_check() -> AppResult<()> {
     Ok(())
 }
 
-fn cmd_list(
-    all: bool,
-    r#type: Option<String>,
-) -> AppResult<()> {
+fn cmd_list(all: bool, r#type: Option<String>) -> AppResult<()> {
     let reg = load_registry()?;
 
     if reg.items.is_empty() {
-        println!("{}", "registry ว่าง — ใช้ 'dev new' สร้างรายการแรก".yellow());
+        println!("{}", "registry ว่าง — ใช้ 'filz new' สร้างรายการแรก".yellow());
         return Ok(());
     }
 
@@ -2476,16 +2861,11 @@ fn cmd_list(
 
     if items.is_empty() {
         println!("{}", "ไม่พบรายการตามเงื่อนไข".yellow());
-        println!("{}", "ลองใช้ 'dev list --all' เพื่อดูทั้งหมด".dimmed());
+        println!("{}", "ลองใช้ 'filz list --all' เพื่อดูทั้งหมด".dimmed());
         return Ok(());
     }
 
-    println!(
-        "{}",
-        format!("=== {} items ===", items.len())
-            .cyan()
-            .bold()
-    );
+    println!("{}", format!("=== {} items ===", items.len()).cyan().bold());
 
     for it in items {
         let size_mb = bytes_to_mb(dir_size_bytes(Path::new(&it.path)));
@@ -2508,9 +2888,22 @@ fn cmd_list(
 
 // Directories to skip during traversal (show entry, don't recurse)
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "target", ".next", "dist", "build",
-    ".turbo", ".vercel", "__pycache__", ".venv", ".mypy_cache",
-    ".pytest_cache", "vendor", ".cache", ".idea", ".vscode",
+    "node_modules",
+    ".git",
+    "target",
+    ".next",
+    "dist",
+    "build",
+    ".turbo",
+    ".vercel",
+    "__pycache__",
+    ".venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    "vendor",
+    ".cache",
+    ".idea",
+    ".vscode",
 ];
 
 fn should_skip_dir(name: &str) -> bool {
@@ -2522,8 +2915,14 @@ fn is_hidden(name: &str) -> bool {
 }
 
 fn cmd_glob(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
-    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    println!("{} ค้นหาไฟล์ที่ชื่อตรงกับ '{}' ใน {}", "🔍".cyan(), pattern, root.display());
+    let root =
+        path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    println!(
+        "{} ค้นหาไฟล์ที่ชื่อตรงกับ '{}' ใน {}",
+        "🔍".cyan(),
+        pattern,
+        root.display()
+    );
     let pat = pattern.to_lowercase();
     let mut count = 0usize;
 
@@ -2551,34 +2950,37 @@ fn cmd_glob(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
         true
     }
 
-    fn walk(dir: &Path, pat: &str, count: &mut usize) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-            entries.sort_by_key(|e| e.file_name());
-            for entry in entries {
-                let name = entry.file_name();
-                let display = name.to_string_lossy();
-                let path = entry.path();
+    let count = with_spinner("searching files", || {
+        fn walk(dir: &Path, pat: &str, count: &mut usize) {
+            if let Ok(entries) = fs::read_dir(dir) {
+                let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                entries.sort_by_key(|e| e.file_name());
+                for entry in entries {
+                    let name = entry.file_name();
+                    let display = name.to_string_lossy();
+                    let path = entry.path();
 
-                if should_skip_dir(&display) {
-                    println!("{}/  (skipped)", colorize_dir(&display));
-                    continue;
-                }
-                if is_hidden(&display) && !pat.starts_with('.') {
-                    continue;
-                }
+                    if should_skip_dir(&display) {
+                        println!("{}/  (skipped)", colorize_dir(&display));
+                        continue;
+                    }
+                    if is_hidden(&display) && !pat.starts_with('.') {
+                        continue;
+                    }
 
-                if path.is_dir() {
-                    walk(&path, pat, count);
-                } else if glob_match(&display, pat) {
-                    println!("{}", colorize_file(&display));
-                    *count += 1;
+                    if path.is_dir() {
+                        walk(&path, pat, count);
+                    } else if glob_match(&display, pat) {
+                        println!("{}", colorize_file(&display));
+                        *count += 1;
+                    }
                 }
             }
         }
-    }
 
-    walk(&root, &pat, &mut count);
+        walk(&root, &pat, &mut count);
+        Ok(count)
+    })?;
     if count == 0 {
         println!(
             "{}",
@@ -2589,14 +2991,26 @@ fn cmd_glob(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
 }
 
 fn cmd_grep(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
-    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let root = path
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     println!("{} ค้นหาข้อความ '{}' ในเนื้อหาไฟล์", "🔎".cyan(), pattern);
     let rg_path = config::vendor_bin("rg");
 
     if let Some(rg) = rg_path {
-        let root = path.unwrap_or_else(|| PathBuf::from("."));
         let output = std::process::Command::new(&rg)
-            .args(["--color=always", "--line-number", "--hidden", "-g", "!node_modules", "-g", "!.git", "-g", "!target", &pattern])
+            .args([
+                "--color=always",
+                "--line-number",
+                "--hidden",
+                "-g",
+                "!node_modules",
+                "-g",
+                "!.git",
+                "-g",
+                "!target",
+                &pattern,
+            ])
             .arg(&root)
             .output()
             .map_err(|e| AppError::Message(format!("rg ไม่พบ: {}", e)))?;
@@ -2612,33 +3026,35 @@ fn cmd_grep(pattern: String, path: Option<PathBuf>) -> AppResult<()> {
     // Fallback: pure Rust grep (no rg available)
     let root = path.unwrap_or_else(|| PathBuf::from("."));
     let pat = pattern.to_lowercase();
-    let mut count = 0usize;
+    let count = with_spinner("searching file contents", || {
+        let mut count = 0usize;
+        fn walk_grep(dir: &Path, pat: &str, count: &mut usize) {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name();
+                    let display = name.to_string_lossy();
+                    let path = entry.path();
 
-    fn walk_grep(dir: &Path, pat: &str, count: &mut usize) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let name = entry.file_name();
-                let display = name.to_string_lossy();
-                let path = entry.path();
-
-                if should_skip_dir(&display) {
-                    continue;
-                }
-                if path.is_dir() {
-                    walk_grep(&path, pat, count);
-                } else if let Ok(content) = fs::read_to_string(&path) {
-                    for (i, line) in content.lines().enumerate() {
-                        if line.to_lowercase().contains(pat) {
-                            println!("{}:{}:{}", path.display(), i + 1, line);
-                            *count += 1;
+                    if should_skip_dir(&display) {
+                        continue;
+                    }
+                    if path.is_dir() {
+                        walk_grep(&path, pat, count);
+                    } else if let Ok(content) = fs::read_to_string(&path) {
+                        for (i, line) in content.lines().enumerate() {
+                            if line.to_lowercase().contains(pat) {
+                                println!("{}:{}:{}", path.display(), i + 1, line);
+                                *count += 1;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    walk_grep(&root, &pat, &mut count);
+        walk_grep(&root, &pat, &mut count);
+        Ok(count)
+    })?;
     if count == 0 {
         println!("{}", format!("ไม่เจอ '{}'", pattern).yellow());
     }
@@ -2650,16 +3066,14 @@ fn cmd_templates() -> AppResult<()> {
 
     if templates.is_empty() {
         println!("{}", "ไม่พบ template ใน templates/".yellow());
-        println!("{}", "สร้างไฟล์ YAML ใน templates/ เช่น templates/website.yaml".dimmed());
+        println!(
+            "{}",
+            "สร้างไฟล์ YAML ใน templates/ เช่น templates/website.yaml".dimmed()
+        );
         return Ok(());
     }
 
-    println!(
-        "{}",
-        format!("=== Templates ({}) ===", templates.len())
-            .cyan()
-            .bold()
-    );
+    println!("{}", header(&format!("{} items", items.len())));
 
     for t in &templates {
         println!(
@@ -2674,11 +3088,20 @@ fn cmd_templates() -> AppResult<()> {
 
     println!();
     println!("{}", "ใช้ wizard แบบ step-by-step:".bold());
-    println!("  {} — สร้าง project ใหม่ด้วย template", "dev new --template website".green());
-    println!("  {} — สร้าง project แบบ interactive (มี wizard)", "dev new".green());
+    println!(
+        "  {} — สร้าง project ใหม่ด้วย template",
+        "filz new --template website".green()
+    );
+    println!(
+        "  {} — สร้าง project แบบ interactive (มี wizard)",
+        "filz new".green()
+    );
     println!();
     println!("{}", "ใช้ --yes เพื่อข้าม wizard และสร้างทันที:".dimmed());
-    println!("  {} — สร้างโดยไม่ต้องยืนยัน", "dev new --name myapp --type work --template website --yes".dimmed());
+    println!(
+        "  {} — สร้างโดยไม่ต้องยืนยัน",
+        "filz new --name myapp --type work --template website --yes".dimmed()
+    );
 
     Ok(())
 }
@@ -2702,7 +3125,7 @@ fn cmd_find(query: String, verbose: bool) -> AppResult<()> {
 
     if hits.is_empty() {
         println!("{}", format!("ไม่เจอ '{}'", query).yellow());
-        println!("{}", "ลองใช้ 'dev list' เพื่อดูรายการทั้งหมด".dimmed());
+        println!("{}", "ลองใช้ 'filz list' เพื่อดูรายการทั้งหมด".dimmed());
         return Ok(());
     }
 
@@ -2803,17 +3226,17 @@ fn cmd_archive(
     };
 
     if dest.exists() {
-        return Err(AppError::Message(format!(
-            "ไฟล์มีอยู่แล้ว: {}",
-            dest.display()
-        )));
+        return Err(AppError::Message(format!("ไฟล์มีอยู่แล้ว: {}", dest.display())));
     }
 
     // Preview (always show what will happen)
     let source_size = dir_size_bytes(&target_path);
     println!();
     println!("{}", "╔══════════════════════════════════════╗".cyan());
-    println!("{}", "║         Preview: Archive               ║".cyan().bold());
+    println!(
+        "{}",
+        "║         Preview: Archive               ║".cyan().bold()
+    );
     println!("{}", "╠══════════════════════════════════════╣".cyan());
     println!("{}  {}", "  ต้นทาง:".bold(), target_path.display());
     println!("{}  {}", "  ปลายทาง:".bold(), dest.display());
@@ -2838,123 +3261,143 @@ fn cmd_archive(
     let parent = target_path.parent().unwrap_or_else(|| Path::new("."));
     let dir_name = target_path.file_name().unwrap();
 
-    let _used_rust = match format {
-        ArchiveFormat::Zip => {
-            let status = std::process::Command::new("zip")
-                .args(["-r", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
-                .current_dir(parent)
-                .status();
-            match status {
-                Ok(s) if s.success() => false,
-                _ => {
-                    println!("{}", "  ใช้ built-in zip...".dimmed());
-                    let file = std::fs::File::create(&dest)
-                        .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
-                    let mut zip = zip::ZipWriter::new(file);
-                    let options = zip::write::FileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated);
-                    fn add_to_zip(dir: &Path, zip: &mut zip::ZipWriter<std::fs::File>, base: &Path, opts: &zip::write::FileOptions) -> Result<(), AppError> {
-                        for entry in std::fs::read_dir(dir).map_err(|e| AppError::Message(e.to_string()))? {
-                            let entry = entry.map_err(|e| AppError::Message(e.to_string()))?;
-                            let path = entry.path();
-                            let rel = path.strip_prefix(base).unwrap_or(&path);
-                            if path.is_dir() {
-                                zip.add_directory(rel.to_string_lossy().as_ref(), opts.clone())
-                                    .map_err(|e| AppError::Message(e.to_string()))?;
-                                add_to_zip(&path, zip, base, opts)?;
-                            } else {
-                                zip.start_file(rel.to_string_lossy().as_ref(), opts.clone())
-                                    .map_err(|e| AppError::Message(e.to_string()))?;
-                                let mut f = std::fs::File::open(&path).map_err(|e| AppError::Message(e.to_string()))?;
-                                std::io::copy(&mut f, zip).map_err(|e| AppError::Message(e.to_string()))?;
+    let _used_rust = with_spinner("compressing archive", || {
+        Ok(match format {
+            ArchiveFormat::Zip => {
+                let status = std::process::Command::new("zip")
+                    .args(["-r", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
+                    .current_dir(parent)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => false,
+                    _ => {
+                        println!("{}", "  ใช้ built-in zip...".dimmed());
+                        let file = std::fs::File::create(&dest)
+                            .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
+                        let mut zip = zip::ZipWriter::new(file);
+                        let options = zip::write::FileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated);
+                        fn add_to_zip(
+                            dir: &Path,
+                            zip: &mut zip::ZipWriter<std::fs::File>,
+                            base: &Path,
+                            opts: &zip::write::FileOptions,
+                        ) -> Result<(), AppError> {
+                            for entry in std::fs::read_dir(dir)
+                                .map_err(|e| AppError::Message(e.to_string()))?
+                            {
+                                let entry = entry.map_err(|e| AppError::Message(e.to_string()))?;
+                                let path = entry.path();
+                                let rel = path.strip_prefix(base).unwrap_or(&path);
+                                if path.is_dir() {
+                                    zip.add_directory(rel.to_string_lossy().as_ref(), opts.clone())
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                    add_to_zip(&path, zip, base, opts)?;
+                                } else {
+                                    zip.start_file(rel.to_string_lossy().as_ref(), opts.clone())
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                    let mut f = std::fs::File::open(&path)
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                    std::io::copy(&mut f, zip)
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                }
                             }
+                            Ok(())
                         }
-                        Ok(())
+                        add_to_zip(&target_path, &mut zip, &target_path, &options)?;
+                        zip.finish().map_err(|e| AppError::Message(e.to_string()))?;
+                        true
                     }
-                    add_to_zip(&target_path, &mut zip, &target_path, &options)?;
-                    zip.finish().map_err(|e| AppError::Message(e.to_string()))?;
-                    true
                 }
             }
-        }
-        ArchiveFormat::Tar => {
-            let status = std::process::Command::new("tar")
-                .args(["cf", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
-                .current_dir(parent)
-                .status();
-            match status {
-                Ok(s) if s.success() => false,
-                _ => {
-                    println!("{}", "  ใช้ built-in tar...".dimmed());
-                    let f = std::fs::File::create(&dest)
-                        .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
-                    let mut ar = tar::Builder::new(f);
-                    ar.append_dir_all(dir_name, &target_path)
-                        .map_err(|e| AppError::Message(e.to_string()))?;
-                    ar.finish().map_err(|e| AppError::Message(e.to_string()))?;
-                    true
+            ArchiveFormat::Tar => {
+                let status = std::process::Command::new("tar")
+                    .args(["cf", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
+                    .current_dir(parent)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => false,
+                    _ => {
+                        println!("{}", "  ใช้ built-in tar...".dimmed());
+                        let f = std::fs::File::create(&dest)
+                            .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
+                        let mut ar = tar::Builder::new(f);
+                        ar.append_dir_all(dir_name, &target_path)
+                            .map_err(|e| AppError::Message(e.to_string()))?;
+                        ar.finish().map_err(|e| AppError::Message(e.to_string()))?;
+                        true
+                    }
                 }
             }
-        }
-        ArchiveFormat::Targz => {
-            let status = std::process::Command::new("tar")
-                .args(["czf", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
-                .current_dir(parent)
-                .status();
-            match status {
-                Ok(s) if s.success() => false,
-                _ => {
-                    println!("{}", "  ใช้ built-in tar+gzip...".dimmed());
-                    let f = std::fs::File::create(&dest)
-                        .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
-                    let enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
-                    let mut ar = tar::Builder::new(enc);
-                    ar.append_dir_all(dir_name, &target_path)
-                        .map_err(|e| AppError::Message(e.to_string()))?;
-                    ar.finish().map_err(|e| AppError::Message(e.to_string()))?;
-                    true
+            ArchiveFormat::Targz => {
+                let status = std::process::Command::new("tar")
+                    .args(["czf", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
+                    .current_dir(parent)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => false,
+                    _ => {
+                        println!("{}", "  ใช้ built-in tar+gzip...".dimmed());
+                        let f = std::fs::File::create(&dest)
+                            .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
+                        let enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+                        let mut ar = tar::Builder::new(enc);
+                        ar.append_dir_all(dir_name, &target_path)
+                            .map_err(|e| AppError::Message(e.to_string()))?;
+                        ar.finish().map_err(|e| AppError::Message(e.to_string()))?;
+                        true
+                    }
                 }
             }
-        }
-        ArchiveFormat::Sevenz => {
-            let status = std::process::Command::new("7z")
-                .args(["a", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
-                .current_dir(parent)
-                .status();
-            match status {
-                Ok(s) if s.success() => false,
-                _ => {
-                    println!("{}", "  7z ไม่มี — ใช้ zip แทน (รองรับทุก OS)".yellow());
-                    let file = std::fs::File::create(&dest)
-                        .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
-                    let mut zip = zip::ZipWriter::new(file);
-                    let options = zip::write::FileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated);
-                    fn add_to_zip(dir: &Path, zip: &mut zip::ZipWriter<std::fs::File>, base: &Path, opts: &zip::write::FileOptions) -> Result<(), AppError> {
-                        for entry in std::fs::read_dir(dir).map_err(|e| AppError::Message(e.to_string()))? {
-                            let entry = entry.map_err(|e| AppError::Message(e.to_string()))?;
-                            let path = entry.path();
-                            let rel = path.strip_prefix(base).unwrap_or(&path);
-                            if path.is_dir() {
-                                zip.add_directory(rel.to_string_lossy().as_ref(), opts.clone())
-                                    .map_err(|e| AppError::Message(e.to_string()))?;
-                                add_to_zip(&path, zip, base, opts)?;
-                            } else {
-                                zip.start_file(rel.to_string_lossy().as_ref(), opts.clone())
-                                    .map_err(|e| AppError::Message(e.to_string()))?;
-                                let mut f = std::fs::File::open(&path).map_err(|e| AppError::Message(e.to_string()))?;
-                                std::io::copy(&mut f, zip).map_err(|e| AppError::Message(e.to_string()))?;
+            ArchiveFormat::Sevenz => {
+                let status = std::process::Command::new("7z")
+                    .args(["a", &dest.to_string_lossy(), &dir_name.to_string_lossy()])
+                    .current_dir(parent)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => false,
+                    _ => {
+                        println!("{}", "  7z ไม่มี — ใช้ zip แทน (รองรับทุก OS)".yellow());
+                        let file = std::fs::File::create(&dest)
+                            .map_err(|e| AppError::Message(format!("สร้างไฟล์ไม่ได้: {}", e)))?;
+                        let mut zip = zip::ZipWriter::new(file);
+                        let options = zip::write::FileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated);
+                        fn add_to_zip(
+                            dir: &Path,
+                            zip: &mut zip::ZipWriter<std::fs::File>,
+                            base: &Path,
+                            opts: &zip::write::FileOptions,
+                        ) -> Result<(), AppError> {
+                            for entry in std::fs::read_dir(dir)
+                                .map_err(|e| AppError::Message(e.to_string()))?
+                            {
+                                let entry = entry.map_err(|e| AppError::Message(e.to_string()))?;
+                                let path = entry.path();
+                                let rel = path.strip_prefix(base).unwrap_or(&path);
+                                if path.is_dir() {
+                                    zip.add_directory(rel.to_string_lossy().as_ref(), opts.clone())
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                    add_to_zip(&path, zip, base, opts)?;
+                                } else {
+                                    zip.start_file(rel.to_string_lossy().as_ref(), opts.clone())
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                    let mut f = std::fs::File::open(&path)
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                    std::io::copy(&mut f, zip)
+                                        .map_err(|e| AppError::Message(e.to_string()))?;
+                                }
                             }
+                            Ok(())
                         }
-                        Ok(())
+                        add_to_zip(&target_path, &mut zip, &target_path, &options)?;
+                        zip.finish().map_err(|e| AppError::Message(e.to_string()))?;
+                        true
                     }
-                    add_to_zip(&target_path, &mut zip, &target_path, &options)?;
-                    zip.finish().map_err(|e| AppError::Message(e.to_string()))?;
-                    true
                 }
             }
-        }
-    };
+        })
+    })?;
 
     // Show result
     let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
@@ -3030,36 +3473,54 @@ fn cmd_clean(theme: &ColorfulTheme, yes: bool) -> AppResult<()> {
 
     let mut to_delete: HashSet<PathBuf> = HashSet::new();
 
-    for idx in &selected {
-        let (_, dirs, files) = &categories[*idx];
+    let selected = if yes {
+        (0..categories.len()).collect::<Vec<_>>()
+    } else {
+        MultiSelect::with_theme(theme)
+            .with_prompt("เลือกหมวดที่จะล้าง")
+            .items(&labels)
+            .defaults(&vec![true, true, true, true, false, false, true])
+            .interact()?
+    };
 
-        for item in &targets {
-            let base = PathBuf::from(&item.path);
+    if selected.is_empty() {
+        println!("{}", "ไม่ได้เลือกอะไร - ยกเลิก".yellow());
+        return Ok(());
+    }
 
-            for d in dirs {
-                let p = base.join(d);
-                if p.exists() {
-                    to_delete.insert(p);
-                }
+    let _ = with_spinner("scanning for junk files", || {
+        for idx in &selected {
+            let (_, dirs, files) = &categories[*idx];
 
-                if let Ok(entries) = fs::read_dir(&base) {
-                    for e in entries.filter_map(|e| e.ok()) {
-                        let nested = e.path().join(d);
-                        if nested.exists() {
-                            to_delete.insert(nested);
+            for item in &targets {
+                let base = PathBuf::from(&item.path);
+
+                for d in dirs {
+                    let p = base.join(d);
+                    if p.exists() {
+                        to_delete.insert(p);
+                    }
+
+                    if let Ok(entries) = fs::read_dir(&base) {
+                        for e in entries.filter_map(|e| e.ok()) {
+                            let nested = e.path().join(d);
+                            if nested.exists() {
+                                to_delete.insert(nested);
+                            }
                         }
                     }
                 }
-            }
 
-            for f in files {
-                let p = base.join(f);
-                if p.exists() {
-                    to_delete.insert(p);
+                for f in files {
+                    let p = base.join(f);
+                    if p.exists() {
+                        to_delete.insert(p);
+                    }
                 }
             }
         }
-    }
+        Ok(())
+    })?;
 
     let total_freed_mb: f64 = to_delete
         .iter()
@@ -3087,9 +3548,9 @@ fn cmd_clean(theme: &ColorfulTheme, yes: bool) -> AppResult<()> {
     }
 
     let confirmed = Confirm::with_theme(theme)
-            .with_prompt(format!("ยืนยันลบทั้งหมด ~{:.2} MB ?", total_freed_mb))
-            .default(false)
-            .interact()?;
+        .with_prompt(format!("ยืนยันลบทั้งหมด ~{:.2} MB ?", total_freed_mb))
+        .default(false)
+        .interact()?;
 
     if !confirmed {
         println!("{}", "ยกเลิกแล้ว".dimmed());
@@ -3132,7 +3593,9 @@ fn tool_version(cmd: &str, flag: &str) -> (bool, String, String) {
         Ok(o) if o.status.success() => {
             let out = String::from_utf8_lossy(&o.stdout);
             let ver = out.lines().next().unwrap_or("").trim().to_string();
-            let path = bin.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let path = bin
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
             (true, ver, path)
         }
         _ => (false, String::new(), String::new()),
@@ -3177,7 +3640,12 @@ fn detect_tools() -> Vec<DetectedTool> {
         if installed {
             seen.insert(name);
         }
-        tools.push(DetectedTool { name, installed, version, path });
+        tools.push(DetectedTool {
+            name,
+            installed,
+            version,
+            path,
+        });
     }
 
     tools
@@ -3207,7 +3675,7 @@ fn cmd_tools() -> AppResult<()> {
     let os = detect_os();
     let arch = detect_arch();
 
-    println!("{}", "=== Toolchain Detection ===".cyan().bold());
+    println!("{}", header("Toolchain Detection"));
     println!(
         "{} {} | {} | {}",
         "OS:".dimmed(),
@@ -3251,7 +3719,7 @@ fn cmd_tools() -> AppResult<()> {
 
 fn cmd_doctor() -> AppResult<()> {
     let reg = load_registry()?;
-    println!("{}", "=== E: Drive Doctor ===".cyan().bold());
+    println!("{}", header("E: Drive Doctor"));
 
     if reg.items.is_empty() {
         println!("{}", "Registry ว่าง".yellow());
@@ -3303,7 +3771,7 @@ fn cmd_doctor() -> AppResult<()> {
     }
 
     println!();
-    println!("{}", "--- System Paths ---".dimmed());
+    println!("{}", "System Paths:".dimmed());
     let sys_paths = vec![
         (
             "E:/cache/pnpm-store",
@@ -3345,7 +3813,7 @@ fn cmd_doctor() -> AppResult<()> {
 
 fn cmd_system_status() -> AppResult<()> {
     let reg = load_registry()?;
-    println!("{}", "=== E: Drive Status ===".cyan().bold());
+    println!("{}", header("E: Drive Status"));
     println!("Registry: {} items", reg.items.len());
     println!(
         "Workspace: {} ({})",
@@ -3418,124 +3886,27 @@ fn cmd_system_clean(yes: bool) -> AppResult<()> {
     Ok(())
 }
 
-fn print_completion(shell: Shell) {
-    let exe = APP_NAME;
-    let (script, ext) = match shell {
-        Shell::Bash => (
-            format!(
-                r#"# bash completion
-_{0}_complete()
-{{
-    local cur prev words cword
-    _init_completion -n : || return
-    case "${{prev}}" in
-        completion)
-            COMPREPLY=( $(compgen -W "bash fish zsh powershell" -- "$cur") )
-            return
-            ;;
-        new|add|find|archive)
-            return
-            ;;
-    esac
+fn print_completion(shell: Shell, output: Option<PathBuf>) -> AppResult<()> {
+    let mut cmd = Cli::command();
+    let mut buffer = Vec::new();
 
-    COMPREPLY=( $(compgen -W "--help -h --all --rust --python --next --node --tool --asset --tools" -- "$cur") )
-}}
-complete -F _{0}_complete {0}
-"#,
-                exe
-            ),
-            "bash",
-        ),
-        Shell::Fish => (
-            format!(
-                r#"# fish completion
-complete -c {0} -s h -l help -d "แสดง help"
-complete -c {0} -n "__fish_use_subcommand" -f -a "new add list find archive clean doctor system tools completion"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l all -d "แสดงทั้งหมด"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l rust -d "กรอง rust"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l python -d "กรอง python"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l next -d "กรอง next"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l node -d "กรอง node"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l tool -d "กรอง tool"
-complete -c {0} -n "__fish_seen_subcommand_from list" -l asset -d "กรอง asset"
-"#,
-                exe
-            ),
-            "fish",
-        ),
-        Shell::Zsh => (
-            format!(
-                r#"# zsh completion
-_{0}()
-{{
-  local context state line
-  _arguments -C \
-    '(-h --help)'{{-h,--help}}'[แสดง help]' \
-    '1:command:(new add list find archive clean doctor system tools completion)' \
-    '*::arg:->args'
+    match shell {
+        Shell::Bash => clap_complete::generate(Bash, &mut cmd, APP_NAME, &mut buffer),
+        Shell::Fish => clap_complete::generate(Fish, &mut cmd, APP_NAME, &mut buffer),
+        Shell::Zsh => clap_complete::generate(Zsh, &mut cmd, APP_NAME, &mut buffer),
+        Shell::PowerShell => clap_complete::generate(PowerShell, &mut cmd, APP_NAME, &mut buffer),
+    }
 
-  case $state in
-    args)
-      case $words[2] in
-        completion)
-          _values 'shells' bash fish zsh powershell
-          ;;
-        list)
-          _arguments \
-            '--all[แสดงทั้งหมด]' \
-            '--rust[กรอง rust]' \
-            '--python[กรอง python]' \
-            '--next[กรอง next]' \
-            '--node[กรอง node]' \
-            '--tool[กรอง tool]' \
-            '--asset[กรอง asset]'
-          ;;
-      esac
-    ;;
-  esac
-}}
-compdef _{0} {0}
-"#,
-                exe
-            ),
-            "zsh",
-        ),
-        Shell::PowerShell => (
-            format!(
-                r#"# powershell completion
-Register-ArgumentCompleter -CommandName {0} -ScriptBlock {{
-    param($commandName, $wordToComplete, $cursorPosition)
-    $commands = 'new','add','list','find','archive','clean','doctor','system','tools','completion'
-    $flags = '--help','-h','--all','--rust','--python','--next','--node','--tool','--asset'
-    $commands + $flags | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
-        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-    }}
-}}
-"#,
-                exe
-            ),
-            "ps1",
-        ),
-    };
-
-    // Prefer repo-provided templates in ./completions/*.ext
-    let repo_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) .join("completions");
-    let repo_template = repo_dir.join(format!("dev.{}", ext));
-
-    let final_script = if repo_template.exists() {
-        match fs::read_to_string(&repo_template) {
-            Ok(tpl) => tpl.replace("{exe}", exe),
-            Err(_) => script,
+    if let Some(path) = output {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
+        fs::write(&path, &buffer)?;
+        println!("{} -> {}", "✓".green(), path.display());
     } else {
-        script
-    };
-
-    let dir = workspace_root().join("completions");
-    let _ = fs::create_dir_all(&dir);
-    let path = dir.join(format!("dev.{}", ext));
-    std::fs::write(&path, &final_script).unwrap();
-    println!("{} -> {}", "✓".green(), path.display());
+        std::io::stdout().write_all(&buffer).map_err(AppError::Io)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3606,7 +3977,6 @@ mod tests {
         assert_eq!(bytes_to_mb(0), 0.0);
     }
 
-
     fn build_registry(n: usize) -> Registry {
         let mut items = HashMap::new();
         for i in 0..n {
@@ -3626,7 +3996,14 @@ mod tests {
         Registry { items }
     }
 
-    fn bench_scale(n: usize) -> (std::time::Duration, std::time::Duration, std::time::Duration, usize) {
+    fn bench_scale(
+        n: usize,
+    ) -> (
+        std::time::Duration,
+        std::time::Duration,
+        std::time::Duration,
+        usize,
+    ) {
         use std::time::Instant;
 
         let reg = build_registry(n);

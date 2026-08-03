@@ -40,7 +40,7 @@ files:
   - path: README.md
     content: |
       # NAME
-      เว็บไซต์ที่สร้างด้วย dev manager
+      เว็บไซต์ที่สร้างด้วย filz manager
 
   - path: meta.json
     content: |

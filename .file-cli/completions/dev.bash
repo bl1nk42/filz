@@ -1,5 +1,5 @@
 # bash completion
-_dev_complete()
+_filz_complete()
 {
     local cur prev words cword
     _init_completion -n : || return
@@ -15,4 +15,4 @@ _dev_complete()
 
     COMPREPLY=( $(compgen -W "--help -h --all --rust --python --next --node --tool --asset --tools" -- "$cur") )
 }
-complete -F _dev_complete dev
+complete -F _filz_complete filz

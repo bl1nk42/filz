@@ -2,7 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.7.0] - 2026-08-03
+## [2.0.0] - 2026-08-03
+
+### UX Improvements
+- **Wizard flow for `filz new`** — step-by-step: choose type → choose template → preview path → confirm
+- **Preview-first for destructive commands** — `clean`, `duplicate`, `archive`, `dedup` always show preview and require confirmation
+- **Simplified output** — `list` and `find` hide `stack` and `category_path` by default; use `--verbose` for details
+- **Dual entry points** — `list` for browsing (hides archive by default), `find` for search (searches name/type/path)
+- **Mental model clarity** — `glob` = find files by name, `grep` = search text in files, `vendor` = find tools
+- **Completion advertised** — `--completion bash|fish|zsh|powershell` in onboarding help
+- **Benchmark moved to diagnostic** — hidden from primary UX, clearly labeled as diagnostic tool
+- **Simplified help text** — primary vs advanced commands separated, Thai language for non-coders
+- **`filz new --template`** — specify template name directly instead of stack
+- **`filz new --yes`** — skip wizard and create immediately
+- **`filz list --all`** — show all items including archive
+- **`filz find --verbose`** — show stack and path details
+- **`filz dedup --yes`** — delete duplicates without confirmation
+
+### Changed
+- Removed `--stack` from primary commands (`new`, `add`, `set`, `list`) — stack is now an internal detail
+- `filz add` now requires `--path` or `--part` (no longer auto-resolves path from type/stack)
+- `filz set` no longer supports `--stack` (use `filz new` to change type/stack)
+- `filz list` no longer supports `--stack` filter (use `--type` instead)
+- `filz new` wizard uses template selection instead of stack selection
+- Help text rewritten with simple Thai for non-coders
+- Onboarding help now advertises completion and separates primary/advanced commands
 
 ### Added
 - `size --top N` — show top N largest files with colored output
@@ -10,7 +34,8 @@ All notable changes to this project will be documented in this file.
 - `colorize_file()` — color by extension (code=blue, config=cyan, image=green, archive=red)
 - `colorize_dir()` — blue bold for directories
 - `colorize_size()` — green/yellow/red by size threshold
-- `CHANGELOG.md` — version history
+
+## [1.7.0] - 2026-08-03
 
 ## [1.6.0] - 2026-08-03
 
