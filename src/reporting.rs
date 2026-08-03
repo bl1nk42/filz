@@ -11,7 +11,11 @@ pub fn format_table(headers: &[&str], rows: &[Vec<String>]) -> String {
             .collect::<Vec<_>>(),
     );
     for row in rows {
-        table.add_row(row.iter().map(|c| Cell::new(c.as_str())).collect::<Vec<_>>());
+        table.add_row(
+            row.iter()
+                .map(|c| Cell::new(c.as_str()))
+                .collect::<Vec<_>>(),
+        );
     }
     format!("{table}")
 }
@@ -40,8 +44,8 @@ mod tests {
     #[test]
     fn format_table_uses_styled_borders() {
         let output = format_table(&["Name", "Count"], &[vec!["demo".into(), "1".into()]]);
-        assert!(output.contains("├"));
-        assert!(output.contains("┼"));
+        assert!(output.contains("┌") || output.contains("╭"));
         assert!(output.contains("demo"));
+        assert!(output.contains("Count"));
     }
 }

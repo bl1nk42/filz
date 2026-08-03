@@ -1,5 +1,4 @@
 use crate::proto as pb;
-use prost::Message;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -72,6 +71,12 @@ impl From<std::io::Error> for AppError {
 impl From<serde_json::Error> for AppError {
     fn from(e: serde_json::Error) -> Self {
         AppError::Json(e)
+    }
+}
+
+impl From<dialoguer::Error> for AppError {
+    fn from(e: dialoguer::Error) -> Self {
+        AppError::Message(e.to_string())
     }
 }
 
