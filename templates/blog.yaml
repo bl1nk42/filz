@@ -13,22 +13,22 @@ files:
   - path: posts/hello.md
     content: |
       # Hello World
-      บทความแรกของ {{name}}
+      บทความแรกของ NAME
 
-      วันที่: {{created}}
+      วันที่: CREATED
 
   - path: posts/drafts/.gitkeep
     content: ""
 
   - path: README.md
     content: |
-      # {{name}}
+      # NAME
       บล็อกส่วนตัว
 
   - path: meta.json
     content: |
       {
-        "name": "{{name}}",
-        "type": "{{type}}",
-        "created": "{{created}}"
+        "name": "NAME",
+        "type": "TYPE",
+        "created": "CREATED"
       }

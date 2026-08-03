@@ -1,0 +1,37 @@
+name: benchmark
+description: เพิ่มสคริปต์ benchmark เปรียบเทียบการค้นหา (ripgrep vs find+grep)
+type: tool
+stack: none
+
+folders:
+  - bench
+
+files:
+  - path: bench/run_bench.sh
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      DIR="$1"
+      OUT_DIR="$2"
+      mkdir -p "$OUT_DIR"
+
+      echo "Creating file list..."
+      find "$DIR" -type f > "$OUT_DIR/files.txt"
+
+      echo "Benchmark: ripgrep (rg) content search"
+      /usr/bin/time -f "rg %e" rg -F "TARGET_LINE_5000" "$DIR" > "$OUT_DIR/rg_out.txt" 2> "$OUT_DIR/rg_time.txt" || true
+
+      echo "Benchmark: find + grep"
+      /usr/bin/time -f "find+grep %e" bash -c "find '$DIR' -type f -print0 | xargs -0 grep -F 'TARGET_LINE_5000'" > "$OUT_DIR/find_grep_out.txt" 2> "$OUT_DIR/find_grep_time.txt" || true
+
+      echo "Results saved in $OUT_DIR"
+
+  - path: bench/README.md
+    content: |
+      Benchmark script compares `rg` (ripgrep) against `find | grep` for content search.
+
+      Usage:
+      ```bash
+      bash bench/run_bench.sh /path/to/search bench/results
+      ```

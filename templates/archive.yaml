@@ -10,13 +10,13 @@ folders:
 files:
   - path: README.md
     content: |
-      # {{name}}
+      # NAME
       ข้อมูลที่เก็บเข้าระบบ
 
   - path: meta.json
     content: |
       {
-        "name": "{{name}}",
-        "type": "{{type}}",
-        "created": "{{created}}"
+        "name": "NAME",
+        "type": "TYPE",
+        "created": "CREATED"
       }

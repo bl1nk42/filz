@@ -12,7 +12,7 @@ files:
   - path: Cargo.toml
     content: |
       [package]
-      name = "{{name}}"
+      name = "NAME"
       version = "0.1.0"
       edition = "2021"
 
@@ -20,20 +20,20 @@ files:
 
   - path: src/main.rs
     content: |
-      fn main() {
-          println!("Hello from {{name}}!");
-      }
+        fn main() {
+          println!("Hello from NAME!");
+        }
 
   - path: README.md
     content: |
-      # {{name}}
+      # NAME
       แอปพลิเคชันที่สร้างด้วย Rust
 
   - path: meta.json
     content: |
       {
-        "name": "{{name}}",
-        "type": "{{type}}",
-        "stack": "{{stack}}",
-        "created": "{{created}}"
+        "name": "NAME",
+        "type": "TYPE",
+        "stack": "STACK",
+        "created": "CREATED"
       }

@@ -12,13 +12,13 @@ folders:
 files:
   - path: README.md
     content: |
-      # {{name}}
+      # NAME
       อัลบั้มรูปภาพ
 
   - path: meta.json
     content: |
       {
-        "name": "{{name}}",
-        "type": "{{type}}",
-        "created": "{{created}}"
+        "name": "NAME",
+        "type": "TYPE",
+        "created": "CREATED"
       }

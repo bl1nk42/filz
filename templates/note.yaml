@@ -12,17 +12,17 @@ files:
     content: |
       # บันทึกแรก
 
-      เริ่มต้นจดบันทึกสำหรับ {{name}}
+      เริ่มต้นจดบันทึกสำหรับ NAME
 
   - path: README.md
     content: |
-      # {{name}}
+      # NAME
       สมุดบันทึก
 
   - path: meta.json
     content: |
       {
-        "name": "{{name}}",
-        "type": "{{type}}",
-        "created": "{{created}}"
+        "name": "NAME",
+        "type": "TYPE",
+        "created": "CREATED"
       }
